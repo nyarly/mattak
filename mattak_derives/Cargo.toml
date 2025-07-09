@@ -1,7 +1,16 @@
 [package]
 name = "mattak_derives"
+description = "derives for supporting mattak"
+keywords = ["axum", "semweb", "web", "derive"]
+
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+readme.workspace = true
+categories.workspace = true
+license-file.workspace = true
+homepage.workspace = true
+repository.workspace = true
 
 [lib]
 proc-macro = true

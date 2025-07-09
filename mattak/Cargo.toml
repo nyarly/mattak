@@ -1,7 +1,16 @@
 [package]
 name = "mattak"
+description = "A collection of tools to support semantic hypermedia in Axum"
+keywords = ["axum", "semweb", "hypermedia", "web"]
+
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+readme.workspace = true
+categories.workspace = true
+license-file.workspace = true
+homepage.workspace = true
+repository.workspace = true
 
 [dependencies]
 tracing = "0.1"
@@ -45,3 +54,7 @@ tracing-test = "0.2.5"
 
 # cachecontrol
 chrono = { version = "0.4.38" }
+
+# ratelimiting
+tower_governor = { version = "0.5.0", features = ["tracing"] }
+governor = "0.8.0"

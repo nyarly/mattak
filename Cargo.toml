@@ -1,9 +1,15 @@
 [workspace]
-resolver = "3"
+resolver = "2"
 members = [ "mattak","mattak_derives"]
 
 # per https://doc.rust-lang.org/cargo/reference/workspaces.html
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Judson Lester <nyarly+mattak@gmail.com>"]
+categories = ["web-programming", "web-programming::http-server" ]
+license-file = "LICENSE"
+readme = "README.md"
+homepage = "https://github.com/nyarly/mattak"
+repository = "https://github.com/nyarly/mattak"
