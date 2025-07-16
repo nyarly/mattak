@@ -265,7 +265,7 @@ impl Authentication {
         let builder = biscuit!(r#"
         reset_password({userid});
         issued_at({now});
-        check if issued_at($issued), time($time), $time > $issued;
+        check if issued_at($issued), time($time), $issued <= $time;
         check if time($time), $time < {expires};
         "#);
         TokenBundle::build(builder.build(&self.keypair())?)
@@ -280,7 +280,7 @@ impl Authentication {
         let mut builder = biscuit!(r#"
         user({userid});
         issued_at({now});
-        check if issued_at($issued), time($time), $time > $issued;
+        check if issued_at($issued), time($time), $issued <= $time;
         check if time($time), $time < {expires};
         "#);
         if let Some(addr) = maybe_addr {
