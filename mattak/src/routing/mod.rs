@@ -25,7 +25,7 @@ mod render;
 mod de;
 pub use de::CaptureDeserializationError;
 
-pub trait RouteTemplate: Copy {
+pub trait RouteTemplate: Clone {
     fn route_template(&self) -> String;
 
     fn prefixed(self, at: &str) -> Entry {

@@ -1066,8 +1066,10 @@ name = "mattak_derives"
 version = "0.1.1"
 dependencies = [
  "iri-string",
+ "mattak",
  "proc-macro2",
  "quote",
+ "serde",
 ]
 
 [[package]]

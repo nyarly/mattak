@@ -1,6 +1,104 @@
 use proc_macro::TokenStream as StdTokenStream;
-use proc_macro2::{Ident, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Ident, TokenStream, TokenTree};
 use quote::quote;
+
+/*
+* Given
+#[derive(Route)]
+#[template(/event_games/{event_id}/user/{user_id})]
+pub(crate) enum MyRoute {
+  event_id: u16,
+  user_id: String,
+}
+
+* Produce
+impl RouteTemplate for MyRoute {
+    fn route_template(&self) -> String {
+        "/event_games/{event_id}/user/{user_id}".to_string()
+    }
+}
+*/
+
+#[proc_macro_derive(Route, attributes(template))]
+pub fn route_derive(annotated_item: StdTokenStream) -> StdTokenStream {
+    let (struct_name, template, vars, var_types) = parse_route(annotated_item);
+
+    // XXX here there should be comparison of the template and the vars
+
+    let expanded = quote! {
+        impl ::mattak::routing::RouteTemplate for #struct_name {
+            fn route_template(&self) -> String {
+                #template.to_string()
+            }
+        }
+        impl ::mattak::routing::Listable for #struct_name {
+            fn list_vars(&self) -> Vec<String> {
+                vec![#(stringify!(#vars).to_string()),*]
+            }
+        }
+        impl ::iri_string::template::context::Context for #struct_name {
+            fn visit<V: ::iri_string::template::context::Visitor>(&self, visitor: V) -> V::Result {
+                match visitor.var_name().as_str() {
+                    #( stringify!(#vars) => visitor.visit_string(self.#vars.clone()), )*
+                    _ => visitor.visit_undefined()
+                }
+            }
+        }
+        impl<'de> ::serde::Deserialize<'de> for #struct_name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where D: ::serde::Deserializer<'de> {
+                let ( #( #vars ),* ) = <( #( #var_types ),* ) as ::serde::Deserialize>::deserialize(deserializer)?;
+                Ok(Self{ #( #vars ),* })
+            }
+        }
+    };
+
+    // to enable debug_output:
+    // cargo test --config "build.rustflags = '--cfg=debug_output'"
+    #[cfg(debug_output)]
+    eprintln!("{}", expanded);
+    expanded.into()
+}
+
+
+
+
+
+/*
+* Given
+#[derive(RouteTemplate)]
+#[template(/event_games/{event_id}/user/{user_id})]
+pub(crate) enum MyRoute {
+  event_id: u16,
+  user_id: String,
+}
+
+* Produce
+impl RouteTemplate for MyRoute {
+    fn route_template(&self) -> String {
+        "/event_games/{event_id}/user/{user_id}".to_string()
+    }
+*/
+
+#[proc_macro_derive(RouteTemplate, attributes(template))]
+pub fn route_template_derive(annotated_item: StdTokenStream) -> StdTokenStream {
+    let (struct_name, template) = parse_route_template(annotated_item);
+
+    let expanded = quote! {
+        impl ::mattak::routing::RouteTemplate for #struct_name {
+            fn route_template(&self) -> String {
+                #template.to_string()
+            }
+        }
+    };
+
+    // to enable debug_output:
+    // cargo test --config "build.rustflags = '--cfg=debug_output'"
+    #[cfg(debug_output)]
+    eprintln!("{}", expanded);
+    expanded.into()
+}
+
 
 /*
 Given:
@@ -106,20 +204,16 @@ fn parse(input: StdTokenStream) -> (Ident, Vec<Ident>, Vec<TokenTree>) {
     #[cfg(debug_output)]
     eprintln!("INPUT: {:?}\n\n", proc2_item);
     let mut tok_iter = proc2_item.into_iter().peekable();
-    while tok_iter.next_if(|tok| match tok {
-        TokenTree::Ident(s) => s != "struct",
-        _ => true
-    }).is_some() {};
 
-    let qstruct = match tok_iter.next() {
-        Some(TokenTree::Ident(s)) => s,
-        _ => panic!("cannot derive Listable without a struct"),
-    };
-    #[cfg(debug_output)]
-    eprintln!("{:?}", qstruct);
-    if qstruct != "struct" {
-        panic!("can only derive Listable on a struct (not an enum or onion)");
+
+    loop {
+        match tok_iter.next() {
+            Some(TokenTree::Ident(s)) if s == "struct" => break,
+            None => panic!("cannot derive Listable without a struct"),
+            _ => ()
+        }
     }
+
     let struct_name = match tok_iter.next() {
         Some(TokenTree::Ident(s)) => s,
         _ => panic!("don't know what to do with a non-ident in this position"),
@@ -129,14 +223,14 @@ fn parse(input: StdTokenStream) -> (Ident, Vec<Ident>, Vec<TokenTree>) {
         _ => panic!("now I'm expecting a group"),
     };
     let mut body_iter = body.stream().into_iter().peekable();
-    let mut vars = vec![];
-    let mut var_types = vec![];
+    let mut fields = vec![];
+    let mut field_types = vec![];
     while let Some(tok) = body_iter.next() {
         match (tok, body_iter.peek()) {
             (TokenTree::Ident(var), Some(TokenTree::Punct(punct))) if punct.as_char() == ':' => {
-                vars.push(var);
+                fields.push(var);
                 body_iter.next(); // consume the ':'
-                var_types.push(body_iter.next().expect("a single ident type after :")) // naive assumption
+                field_types.push(body_iter.next().expect("a single ident type after :")) // naive assumption
             },
             _ => ()
         }
@@ -145,7 +239,148 @@ fn parse(input: StdTokenStream) -> (Ident, Vec<Ident>, Vec<TokenTree>) {
     #[cfg(debug_output)]
     eprintln!("STRUCT: {:?}", struct_name);
     #[cfg(debug_output)]
-    eprintln!("VARS: {:?}", vars);
+    eprintln!("VARS: {:?}", fields);
 
-    (struct_name, vars, var_types)
+    (struct_name, fields, field_types)
+}
+
+fn parse_route_template(input: StdTokenStream) -> (Ident, TokenStream) {
+    let proc2_item = TokenStream::from(input);
+    #[cfg(debug_output)]
+    eprintln!("INPUT: {:?}\n\n", proc2_item);
+    let mut tok_iter = proc2_item.into_iter().peekable();
+
+    let mut attr_iter: std::iter::Peekable<proc_macro2::token_stream::IntoIter>;
+    loop {
+
+        loop {
+            match tok_iter.next() {
+                Some(TokenTree::Punct(p)) if p.as_char() == '#' => break,
+                None => panic!("Route template requires #[template(\"...\")]"),
+                _ => ()
+            }
+        }
+
+        let attr = match tok_iter.next() {
+            Some(TokenTree::Group(br)) if br.delimiter() == Delimiter::Bracket => {
+                br.stream()
+            },
+            _ => panic!("#[template(...)] required by RouteTemplate")
+        };
+
+        attr_iter = attr.into_iter().peekable();
+        match attr_iter.next() {
+            Some(TokenTree::Ident(n)) if n == "template" => break,
+            Some(TokenTree::Ident(_)) => (),
+            _ => panic!("expecting an attribute name inside #[...]")
+        };
+    }
+
+    let template = match attr_iter.next() {
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
+            g.stream()
+        },
+        _ => panic!("#[template] must have (\"<template>\")")
+    };
+
+    loop {
+        match tok_iter.next() {
+            Some(TokenTree::Ident(s)) if s == "struct" => break,
+            None => panic!("RouteTemplate can only be derived on a struct"),
+            _ => ()
+        }
+    }
+
+    let struct_name = match tok_iter.next() {
+        Some(TokenTree::Ident(s)) => s,
+        _ => panic!("don't know what to do with a non-ident after `struct`"),
+    };
+
+    #[cfg(debug_output)]
+    eprintln!("STRUCT: {:?}", struct_name);
+    #[cfg(debug_output)]
+    eprintln!("TEMPLATE: {:?}", template);
+
+    (struct_name, template)
+}
+
+fn parse_route(input: StdTokenStream) -> (Ident, TokenStream, Vec<Ident>, Vec<TokenTree>) {
+    let proc2_item = TokenStream::from(input);
+    #[cfg(debug_output)]
+    eprintln!("INPUT: {:?}\n\n", proc2_item);
+    let mut tok_iter = proc2_item.into_iter().peekable();
+
+    let mut attr_iter: std::iter::Peekable<proc_macro2::token_stream::IntoIter>;
+    loop {
+
+        loop {
+            match tok_iter.next() {
+                Some(TokenTree::Punct(p)) if p.as_char() == '#' => break,
+                None => panic!("Route template requires #[template(\"...\")]"),
+                _ => ()
+            }
+        }
+
+        let attr = match tok_iter.next() {
+            Some(TokenTree::Group(br)) if br.delimiter() == Delimiter::Bracket => {
+                br.stream()
+            },
+            _ => panic!("#[template(...)] required by RouteTemplate")
+        };
+
+        attr_iter = attr.into_iter().peekable();
+        match attr_iter.next() {
+            Some(TokenTree::Ident(n)) if n == "template" => break,
+            Some(TokenTree::Ident(_)) => (),
+            _ => panic!("expecting an attribute name inside #[...]")
+        };
+    }
+
+    let template = match attr_iter.next() {
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
+            g.stream()
+        },
+        _ => panic!("#[template] must have (\"<template>\")")
+    };
+
+    loop {
+        match tok_iter.next() {
+            Some(TokenTree::Ident(s)) if s == "struct" => break,
+            None => panic!("RouteTemplate can only be derived on a struct"),
+            _ => ()
+        }
+    }
+
+    let struct_name = match tok_iter.next() {
+        Some(TokenTree::Ident(s)) => s,
+        _ => panic!("don't know what to do with a non-ident after `struct`"),
+    };
+
+    let body = match tok_iter.next() {
+        Some(TokenTree::Group(g)) => g,
+        _ => panic!("now I'm expecting a group"),
+    };
+    let mut body_iter = body.stream().into_iter().peekable();
+    let mut fields = vec![];
+    let mut field_types = vec![];
+    while let Some(tok) = body_iter.next() {
+        match (tok, body_iter.peek()) {
+            (TokenTree::Ident(var), Some(TokenTree::Punct(punct))) if punct.as_char() == ':' => {
+                fields.push(var);
+                body_iter.next(); // consume the ':'
+                field_types.push(body_iter.next().expect("a single ident type after :")) // naive assumption
+            },
+            _ => ()
+        }
+    }
+
+
+    #[cfg(debug_output)]
+    eprintln!("STRUCT: {:?}", struct_name);
+    #[cfg(debug_output)]
+    eprintln!("TEMPLATE: {:?}", template);
+    #[cfg(debug_output)]
+    eprintln!("FIELDS: {:?}", fields);
+
+    (struct_name, template , fields, field_types)
 }

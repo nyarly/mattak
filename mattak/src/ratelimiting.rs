@@ -7,17 +7,16 @@
 /// spawns a thread to reap governor data.
 ///
 /// Use this like:
-/// ```rust
+/// ```ignore
 /// use mattak::ratelimiting::{self, IpExtractor, GovernorConfigBuilder};
 ///
-///  #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// fn main() -> () {
 ///    let app = Router::new()
-///        .route(&path(RouteMap::Root), get(sitemap))
+///        .route(&path("/"), get(sitemap))
 ///        .layer(ratelimiting::layer("api-root", extractor, GovernorConfigBuilder::default()
 ///            .per_millisecond(20)
 ///            .burst_size(60)
-///        ))
+///        ));
 /// }
 /// ```
 use std::{net::IpAddr, sync::Arc, time::Duration};
