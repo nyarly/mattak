@@ -1,6 +1,7 @@
 use proc_macro::TokenStream as StdTokenStream;
 use proc_macro2::{Delimiter, Ident, TokenStream, TokenTree};
 use quote::quote;
+use mattak::routing::template_vars;
 
 /*
 * Given
@@ -24,6 +25,7 @@ pub fn route_derive(annotated_item: StdTokenStream) -> StdTokenStream {
     let (struct_name, template, vars, var_types) = parse_route(annotated_item);
 
     // XXX here there should be comparison of the template and the vars
+    validate_route(template.clone(), vars.clone());
 
     let expanded = quote! {
         impl ::mattak::routing::RouteTemplate for #struct_name {
@@ -61,6 +63,31 @@ pub fn route_derive(annotated_item: StdTokenStream) -> StdTokenStream {
 }
 
 
+fn validate_route(template: TokenStream, vars: Vec<Ident>) {
+    let mut tmpl_iter = template.into_iter();
+    let tmpl_string = match tmpl_iter.next() {
+        Some(TokenTree::Literal(t)) => t.to_string(),
+        _ => panic!("#[template(...)] argument must be a string!")
+    };
+    let tmpl_string = tmpl_string.trim_matches('"');
+    #[cfg(debug_output)]
+    eprintln!("TEMPLATE {tmpl_string:?}");
+
+    let mut expected = template_vars(tmpl_string);
+    expected.sort();
+    expected.dedup();
+    let mut actual = vars.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+    actual.sort();
+
+    #[cfg(debug_output)]
+    eprintln!("EXPECTED {expected:?}");
+    #[cfg(debug_output)]
+    eprintln!("ACTUAL   {actual:?}");
+
+    if expected != actual {
+        panic!("fields of a Route have to match their #[template(...)] vars!");
+    }
+}
 
 
 

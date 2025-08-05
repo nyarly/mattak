@@ -25,6 +25,26 @@ mod render;
 mod de;
 pub use de::CaptureDeserializationError;
 
+/// This is used by the Route derive macro to validate that templates align with fields
+/// Not advised for general use - the parse of the template might panic, and isn't cacched anywhere.
+/// Instead, see route_config
+pub fn template_vars(template: &str) -> Vec<String> {
+    let parsed = parser::parse(template).unwrap();
+
+    parsed.parts_iter().filter_map(|part|
+        match part {
+            Part::Lit(_) => None,
+            Part::Expression(expression) |
+            Part::SegVar(expression) |
+            Part::SegPathVar(expression) |
+            Part::SegRest(expression) |
+            Part::SegPathRest(expression) =>
+                Some(expression.varspecs.iter().map(|vs| vs.varname.clone()).collect::<Vec<_>>()),
+        }
+
+    ).flatten().collect::<Vec<_>>()
+}
+
 pub trait RouteTemplate: Clone {
     fn route_template(&self) -> String;
 
@@ -224,35 +244,10 @@ struct InnerSingle {
 
 
 impl InnerSingle {
-    fn auth_expressions(&self) -> Vec<Part> {
-        match &self.parsed.auth {
-            Some(parts) => parts.iter().filter(|part| {
-                !matches!(part, Part::Lit(_))
-            }).cloned().collect(),
-            None => vec![]
-        }
-    }
-
-    fn path_expressions(&self) -> Vec<Part> {
-        self.parsed.path.iter().filter(|part| {
-            !matches!(part, Part::Lit(_))
-        }).cloned().collect()
-    }
-
-    fn query_expressions(&self) -> Vec<Part> {
-        match &self.parsed.query {
-            Some(parts) => parts.iter().filter(|part| {
-                !matches!(part, Part::Lit(_))
-            }).cloned().collect(),
-            None => vec![]
-        }
-    }
-
     fn expressions(&self) -> Vec<Part> {
-        self.auth_expressions().iter()
-            .chain(self.path_expressions().iter())
-            .chain(self.query_expressions().iter())
-            .cloned().collect()
+        self.parsed.parts_iter().filter(|part|
+            !matches!(part, Part::Lit(_))
+        ).cloned().collect()
     }
 
     fn hydra_type(&self) -> String {
@@ -316,10 +311,7 @@ impl InnerSingle {
     }
 
     fn template_string(&self) -> String {
-        self.parsed.auth.iter().flatten().map(original_string)
-        .chain(self.parsed.path.iter().map(original_string))
-        .chain(self.parsed.query.iter().flatten().map(original_string))
-        .collect::<Vec<_>>().join("")
+        self.parsed.parts_iter().map(original_string).collect::<Vec<_>>().join("")
     }
 
     fn template(&self) -> Result<UriTemplateString, Error> {

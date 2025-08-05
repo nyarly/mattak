@@ -18,10 +18,10 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "1.0.86"
 quote = "1.0.37"
+mattak = { path = "../mattak" }
 
 [dev-dependencies]
 iri-string = { version = "0.7.4", features = ["serde"] }
-mattak = { path = "../mattak" }
 serde = { version = "~1.0.204", features = ["derive"] }
 
 [lints.rust]

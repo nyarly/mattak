@@ -72,6 +72,37 @@ pub(super) struct Parsed {
     pub(super) query: Option<Vec<Part>>,
 }
 
+impl Parsed {
+    pub(super) fn parts_iter(&self) -> impl Iterator<Item = &Part> {
+        self.auth.iter().flatten()
+            .chain(self.path.iter())
+            .chain(self.query.iter().flatten())
+    }
+}
+
+
+#[derive(Debug, PartialEq, Clone)]
+pub(super) enum Part {
+    Lit(String),
+    Expression(Expression),
+    SegVar(Expression),
+    SegPathVar(Expression),
+    SegRest(Expression),
+    SegPathRest(Expression),
+}
+
+impl Default for Part {
+    fn default() -> Self {
+        Part::Lit("".to_string())
+    }
+}
+
+impl Part {
+    fn to_lit(s: &str) -> Self {
+        Part::Lit(s.to_owned())
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct Expression {
     pub(super) operator: Op,
@@ -131,29 +162,6 @@ impl Op {
         }
     }
 }
-
-#[derive(Debug, PartialEq, Clone)]
-pub(super) enum Part {
-    Lit(String),
-    Expression(Expression),
-    SegVar(Expression),
-    SegPathVar(Expression),
-    SegRest(Expression),
-    SegPathRest(Expression),
-}
-
-impl Default for Part {
-    fn default() -> Self {
-        Part::Lit("".to_string())
-    }
-}
-
-impl Part {
-    fn to_lit(s: &str) -> Self {
-        Part::Lit(s.to_owned())
-    }
-}
-
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct VarSpec{
