@@ -25,13 +25,15 @@ mod render;
 mod de;
 pub use de::CaptureDeserializationError;
 
+pub use iri_string::template::context;
+
 /// This is used by the Route derive macro to validate that templates align with fields
 /// Not advised for general use - the parse of the template might panic, and isn't cacched anywhere.
 /// Instead, see route_config
 pub fn template_vars(template: &str) -> Vec<String> {
     let parsed = parser::parse(template).unwrap();
 
-    parsed.parts_iter().filter_map(|part|
+    parsed.nonquery_parts_iter().filter_map(|part|
         match part {
             Part::Lit(_) => None,
             Part::Expression(expression) |
@@ -46,10 +48,26 @@ pub fn template_vars(template: &str) -> Vec<String> {
 }
 
 pub trait RouteTemplate: Clone {
+    // XXX really nice to have this as an associated method...
+    // Would like this one structs and have it work with Self,
+    // and maybe with Enum instances.
     fn route_template(&self) -> String;
 
+    // XXX have to be able to hash the template,
+    // _but_ it could hash the String
+    // _but, OTOH_ it would be better to avoid
+    //   instantiating a string for a parsed template
     fn prefixed(self, at: &str) -> Entry {
         route_config(self).prefixed(at)
+    }
+}
+
+#[derive(Clone)]
+pub struct RouteTemplateString(String);
+
+impl RouteTemplate for RouteTemplateString {
+    fn route_template(&self) -> String {
+        self.0.clone()
     }
 }
 
@@ -283,9 +301,7 @@ impl InnerSingle {
     }
 
     fn re_names(&self) -> Vec<String> {
-        self.parsed.auth.iter().flatten().map(re_names)
-            .chain(self.parsed.path.iter().map(re_names))
-            .flatten().collect::<Vec<_>>()
+        self.parsed.nonquery_parts_iter().flat_map(re_names).collect::<Vec<_>>()
     }
 
     // definitely consider caching this result

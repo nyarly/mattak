@@ -38,8 +38,8 @@ pub fn route_derive(annotated_item: StdTokenStream) -> StdTokenStream {
                 vec![#(stringify!(#vars).to_string()),*]
             }
         }
-        impl ::iri_string::template::context::Context for #struct_name {
-            fn visit<V: ::iri_string::template::context::Visitor>(&self, visitor: V) -> V::Result {
+        impl ::mattak::routing::context::Context for #struct_name {
+            fn visit<V: ::mattak::routing::context::Visitor>(&self, visitor: V) -> V::Result {
                 match visitor.var_name().as_str() {
                     #( stringify!(#vars) => visitor.visit_string(self.#vars.clone()), )*
                     _ => visitor.visit_undefined()
@@ -192,8 +192,8 @@ pub fn context_derive(item: StdTokenStream) -> StdTokenStream {
     let (struct_name, vars, _) = parse(item);
 
     let expanded = quote! {
-        impl ::iri_string::template::context::Context for #struct_name {
-            fn visit<V: ::iri_string::template::context::Visitor>(&self, visitor: V) -> V::Result {
+        impl ::mattak::routing::context::Context for #struct_name {
+            fn visit<V: ::mattak::routing::context::Visitor>(&self, visitor: V) -> V::Result {
                 match visitor.var_name().as_str() {
                     #( stringify!(#vars) => visitor.visit_string(self.#vars.clone()), )*
                     _ => visitor.visit_undefined()

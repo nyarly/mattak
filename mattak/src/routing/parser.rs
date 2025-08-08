@@ -78,6 +78,10 @@ impl Parsed {
             .chain(self.path.iter())
             .chain(self.query.iter().flatten())
     }
+    pub(super) fn nonquery_parts_iter(&self) -> impl Iterator<Item = &Part> {
+        self.auth.iter().flatten()
+            .chain(self.path.iter())
+    }
 }
 
 
