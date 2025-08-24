@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     hash::Hash,
     sync::{Arc, Mutex, OnceLock, RwLock},
 };
@@ -15,10 +15,7 @@ use render::fill_parts;
 use serde::de::DeserializeOwned;
 use tracing::{debug, trace};
 
-use crate::{
-    error::Error,
-    routing::{parser::VarMod, render::var_re_name},
-};
+use crate::{error::Error, routing::parser::VarMod};
 
 use self::{
     parser::{Parsed, Part},
@@ -415,7 +412,7 @@ impl InnerSingle {
         let parsed = &self.parsed;
         let regex = self.regex()?;
 
-        let de = de::UriDeserializer::for_uri(uri, parsed, regex)?;
+        let de = de::UriDeserializer::for_uri(&uri, parsed, regex)?;
 
         T::deserialize(de).map_err(Error::from)
     }
@@ -500,13 +497,6 @@ impl InnerSingle {
 
         out
     }
-}
-
-fn percent_decode<S: AsRef<str>>(s: S) -> Option<Arc<str>> {
-    percent_encoding::percent_decode(s.as_ref().as_bytes())
-        .decode_utf8()
-        .ok() //consider: Result?
-        .map(|decoded| decoded.as_ref().into())
 }
 
 #[cfg(test)]

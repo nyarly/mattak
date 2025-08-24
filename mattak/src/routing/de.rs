@@ -6,7 +6,6 @@ use serde::{
 };
 use std::{
     any::type_name,
-    borrow::Cow,
     collections::{hash_map, HashMap, HashSet},
     fmt,
     rc::Rc,
@@ -15,7 +14,7 @@ use std::{
 
 use crate::{
     error,
-    routing::{percent_decode, render::var_re_name, Parsed, Part, VarMod},
+    routing::{render::var_re_name, Parsed, Part, VarMod},
 };
 
 // *** Time being, this is cribbed wholesale from Axum
@@ -194,7 +193,7 @@ macro_rules! parse_single_value {
             V: Visitor<'de>,
         {
             if self.varlist.len() == 1 {
-                let value = match self.varlist[0] {
+                let value = match &self.varlist[0] {
                     (_, VarBinding::Scalar(scalar)) => scalar.parse().map_err(|_| {
                         UriDeserializationError::new(ErrorKind::ParseError {
                             value: scalar.to_string(),
@@ -230,15 +229,15 @@ macro_rules! parse_single_value {
     };
 }
 
-pub(crate) struct UriDeserializer<'de> {
-    varlist: Vec<(String, VarBinding<'de>)>,
+pub(crate) struct UriDeserializer {
+    varlist: Vec<(Rc<str>, VarBinding)>,
     query_assocs: HashMap<Rc<str>, Rc<str>>,
 }
 
-impl<'de> UriDeserializer<'de> {
+impl UriDeserializer {
     #[inline]
     pub(crate) fn new(
-        varlist: Vec<(Rc<str>, VarBinding<'de>)>,
+        varlist: Vec<(Rc<str>, VarBinding)>,
         query_assocs: HashMap<Rc<str>, Rc<str>>,
     ) -> Self {
         UriDeserializer {
@@ -248,14 +247,14 @@ impl<'de> UriDeserializer<'de> {
     }
 }
 
-enum VarBinding<'a> {
-    Scalar(&'a str),
+enum VarBinding {
+    Scalar(Rc<str>),
     PathExplode(Rc<str>, Rc<str>), // sep, string value
     QueryExplode(Vec<Rc<str>>),
     Empty,
 }
 
-fn parsed_template_vars(parsed: &Parsed) -> Vec<String> {
+fn parsed_template_vars(parsed: &Parsed) -> Vec<Rc<str>> {
     parsed
         .parts_iter()
         .filter_map(|part| match part {
@@ -268,7 +267,7 @@ fn parsed_template_vars(parsed: &Parsed) -> Vec<String> {
                 expression
                     .varspecs
                     .iter()
-                    .map(|vs| vs.varname.clone())
+                    .map(|vs| Rc::<str>::from(vs.varname.clone())) // XXX consider Rc<str> in VarSpec
                     .collect::<Vec<_>>(),
             ),
         })
@@ -278,7 +277,7 @@ fn parsed_template_vars(parsed: &Parsed) -> Vec<String> {
 
 //   * Parser Path Scalar names
 //   Need to emit (capture,varname) - usually (x,x) but sometimes (x,x_p3)
-fn path_scalar_names(parsed: &Parsed) -> HashMap<&str, String> {
+fn path_scalar_names(parsed: &Parsed) -> HashMap<Rc<str>, Rc<str>> {
     let mut result = HashMap::new();
     use Part::*;
     for part in parsed.nonquery_parts_iter() {
@@ -288,12 +287,12 @@ fn path_scalar_names(parsed: &Parsed) -> HashMap<&str, String> {
                 for v in &exp.varspecs {
                     match v.modifier {
                         VarMod::None => {
-                            let name = v.varname.as_str();
-                            result.insert(name, name.to_string()); // SCALAR
+                            let name: Rc<str> = v.varname.clone().into();
+                            result.insert(name.clone(), name); // SCALAR
                         }
                         VarMod::Prefix(_) => {
                             // XXX edge case: should be the longest prefix
-                            result.insert(v.varname.as_str(), var_re_name(&v));
+                            result.insert(v.varname.clone().into(), var_re_name(&v).into());
                         }
                         VarMod::Explode => (),
                     }
@@ -373,7 +372,7 @@ fn query_explode_names(parsed: &Parsed) -> HashSet<&str> {
         .flatten()
         .collect()
 }
-impl<'de> UriDeserializer<'_> {
+impl UriDeserializer {
     // XXX &Uri?
     // The deserializer will need:
     // * KV of scalars
@@ -483,13 +482,13 @@ impl<'de> UriDeserializer<'_> {
     ///
     /// This function will return an error if
     pub(crate) fn for_uri(
-        uri: &'de Uri,
-        parsed: &'de Parsed,
+        uri: &Uri,
+        parsed: &Parsed,
         regex: &Regex,
-    ) -> Result<UriDeserializer<'de>, error::Error> {
-        let mut scalars: HashMap<&'de str, &'de str> = HashMap::new();
-        let mut path_explodes: HashMap<&str, (Rc<str>, Rc<str>)> = HashMap::new();
-        let mut query_explodes: HashMap<&str, Option<Vec<Rc<str>>>> = HashMap::new();
+    ) -> Result<UriDeserializer, error::Error> {
+        let mut scalars: HashMap<Rc<str>, Rc<str>> = HashMap::new();
+        let mut path_explodes: HashMap<Rc<str>, (Rc<str>, Rc<str>)> = HashMap::new();
+        let mut query_explodes: HashMap<Rc<str>, Vec<Rc<str>>> = HashMap::new();
         let mut query_assocs: HashMap<Rc<str>, Rc<str>> = HashMap::new();
         // definitely considering a secondary Nom parser instead of RE here.
         let path = uri.path();
@@ -511,9 +510,9 @@ impl<'de> UriDeserializer<'_> {
             (true, Some(q)) => form_urlencoded::parse(q.as_bytes()),
         };
 
-        let mut new_scalar = |var_name: &str, m: &str| -> Result<(), error::Error> {
+        let mut new_scalar = |var_name: Rc<str>, m: Rc<str>| -> Result<(), error::Error> {
             if let Some(new_val) = percent_decode(m) {
-                if let Some(val) = scalars.get(var_name) {
+                if let Some(val) = scalars.get(&var_name) {
                     if val.len() > new_val.len() {
                         if !val.starts_with(&*new_val) {
                             return Err(error::Error::MismatchedValues(
@@ -522,8 +521,8 @@ impl<'de> UriDeserializer<'_> {
                                 new_val.to_string(),
                             ));
                         } // else we already have the longest value
-                    } else if new_val.starts_with(*val) {
-                        scalars.insert(var_name, &new_val);
+                    } else if new_val.starts_with(val.as_ref()) {
+                        scalars.insert(var_name, new_val);
                     } else {
                         return Err(error::Error::MismatchedValues(
                             var_name.to_string(),
@@ -532,7 +531,7 @@ impl<'de> UriDeserializer<'_> {
                         ));
                     }
                 } else {
-                    scalars.insert(var_name, &new_val);
+                    scalars.insert(var_name, new_val);
                 }
             };
             Ok(())
@@ -545,19 +544,12 @@ impl<'de> UriDeserializer<'_> {
             let value: Rc<str> = cow_value.into_owned().into();
 
             if query_scalar_names.contains(var_name.as_ref()) {
-                new_scalar(&var_name, &value)?
+                new_scalar(var_name, value)?
             } else if query_explode_names.contains(var_name.as_ref()) {
-                match query_explodes.entry(&var_name) {
-                    hash_map::Entry::Occupied(mut entry) => match entry.get() {
-                        Some::<Vec<_>>(ref mut exes) => exes.push(value.clone()),
-                        None => {
-                            entry.insert(Some(vec![value.clone()]));
-                        }
-                    },
-                    hash_map::Entry::Vacant(entry) => {
-                        entry.insert(Some(vec![value.clone()]));
-                    }
-                }
+                query_explodes
+                    .entry(var_name)
+                    .and_modify(|exes| exes.push(value.clone()))
+                    .or_insert_with(|| vec![value.clone()]);
             } else {
                 match query_assocs.entry(var_name.as_ref().into()) {
                     hash_map::Entry::Occupied(entry) => {
@@ -577,19 +569,19 @@ impl<'de> UriDeserializer<'_> {
             }
         }
         for x_name in query_explode_names {
-            query_explodes.entry(x_name).or_default();
+            query_explodes.entry(x_name.into()).or_default();
         }
 
         let names = path_scalar_names(parsed);
         for (var_name, re_name) in names {
             if let Some(m) = caps.name(&re_name) {
-                new_scalar(var_name, m.as_str())?
+                new_scalar(var_name, m.as_str().into())?
             }
         }
         for (sep, var_name) in path_explode_names(parsed) {
             if let Some(m) = caps.name(&var_name) {
                 if let Some(dec) = percent_decode(m.as_str()) {
-                    path_explodes.insert(var_name, (sep.into(), dec));
+                    path_explodes.insert(var_name.into(), (sep.into(), dec));
                 }
             }
         }
@@ -598,25 +590,30 @@ impl<'de> UriDeserializer<'_> {
             .iter()
             .map(move |vname| {
                 match (
-                    scalars.get(vname.as_str()),
-                    path_explodes.get(vname.as_str()),
-                    query_explodes.get(vname.as_str()),
+                    scalars.get(vname),
+                    path_explodes.get(vname),
+                    query_explodes.get(vname),
                 ) {
-                    (Some(scalar), None, None) => Ok((vname.clone(), VarBinding::Scalar(*scalar))),
+                    (Some(scalar), None, None) => {
+                        Ok((vname.clone(), VarBinding::Scalar(scalar.clone())))
+                    }
                     (None, Some((sep, string)), None) => Ok((
                         vname.clone(),
                         VarBinding::PathExplode(sep.clone(), string.clone()),
                     )),
-                    (None, None, Some(query)) => match query {
-                        Some(q) => Ok((vname.clone(), VarBinding::QueryExplode(q.clone()))),
-                        None => Ok((vname.clone(), VarBinding::Empty)),
-                    },
-                    (None, Some((sep, string)), Some(maybe_query)) => {
+                    (None, None, Some(query)) => {
+                        if query.len() > 0 {
+                            Ok((vname.clone(), VarBinding::QueryExplode(query.clone())))
+                        } else {
+                            Ok((vname.clone(), VarBinding::Empty))
+                        }
+                    }
+                    (None, Some((sep, string)), Some(query)) => {
                         let path_vec = string
                             .split(sep.as_ref())
                             .map(|part| part.into())
                             .collect::<Vec<Rc<str>>>();
-                        if let Some(query) = maybe_query {
+                        if query.len() > 0 {
                             if path_vec == *query {
                                 Ok((
                                     vname.clone(),
@@ -655,7 +652,14 @@ impl<'de> UriDeserializer<'_> {
     }
 }
 
-impl<'de> Deserializer<'de> for UriDeserializer<'de> {
+fn percent_decode<S: AsRef<str>>(s: S) -> Option<Rc<str>> {
+    percent_encoding::percent_decode(s.as_ref().as_bytes())
+        .decode_utf8()
+        .ok() //consider: Result?
+        .map(|decoded| decoded.as_ref().into())
+}
+
+impl<'de> Deserializer<'de> for UriDeserializer {
     type Error = UriDeserializationError;
 
     unsupported_type!(deserialize_bytes);
