@@ -28,16 +28,18 @@ pub fn route_derive(annotated_item: StdTokenStream) -> StdTokenStream {
     validate_route(template.clone(), vars.clone());
 
     let expanded = quote! {
-        impl ::mattak::routing::RouteTemplate for #struct_name {
-            fn route_template(&self) -> String {
-                #template.to_string()
+        impl ::mattak::routing::Route for #struct_name {
+            fn route_template() -> ::mattak::routing::RouteTemplateString {
+                ::mattak::routing::RouteTemplateString(#template.to_string())
             }
         }
+
         impl ::mattak::routing::Listable for #struct_name {
             fn list_vars(&self) -> Vec<String> {
                 vec![#(stringify!(#vars).to_string()),*]
             }
         }
+
         impl ::mattak::routing::context::Context for #struct_name {
             fn visit<V: ::mattak::routing::context::Visitor>(&self, visitor: V) -> V::Result {
                 match visitor.var_name().as_str() {
@@ -46,6 +48,7 @@ pub fn route_derive(annotated_item: StdTokenStream) -> StdTokenStream {
                 }
             }
         }
+
         impl<'de> ::serde::Deserialize<'de> for #struct_name {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where D: ::serde::Deserializer<'de> {

@@ -1,6 +1,6 @@
+use axum::extract;
 use axum::{http, response::IntoResponse};
 use axum_extra::extract as extra_extract;
-use axum::extract;
 use tracing::debug;
 
 use crate::routing;
@@ -25,10 +25,12 @@ pub enum Error {
     InvalidHeaderValue(#[from] http::header::InvalidHeaderValue),
     #[error("regex parse: {0:?}")]
     RegexParse(#[from] regex::Error),
-    #[error("no match: {0:?} vs {1:?}")]
-    NoMatch(String, String),
+    #[error("for variable {0:?}: two different values: {1:?} vs {2:?}")]
+    MismatchedValues(String, String, String),
+    #[error("no match: {0:?}")]
+    NoMatch(String),
     #[error("capture deserialization: {0:?}")]
-    Deserialization(#[from] routing::CaptureDeserializationError),
+    Deserialization(#[from] routing::UriDeserializationError),
     #[error("couldn't serialize JSON: {0:?}")]
     JSONSerialization(#[from] serde_json::Error),
     #[error("badly formatted ETag: {0:?}")]
@@ -72,19 +74,31 @@ impl IntoResponse for Error {
         match self {
             // best errors: we know how they match up to status codes
             Error::NoToken => (StatusCode::UNAUTHORIZED, "/api/authentication").into_response(),
-            Error::RevokedToken => (StatusCode::UNAUTHORIZED, "/api/authentication").into_response(),
-            Error::AuthorizationFailed => (StatusCode::FORBIDDEN, "insufficient access").into_response(),
+            Error::RevokedToken => {
+                (StatusCode::UNAUTHORIZED, "/api/authentication").into_response()
+            }
+            Error::AuthorizationFailed => {
+                (StatusCode::FORBIDDEN, "insufficient access").into_response()
+            }
             Error::PreconditionFailed(s) => (StatusCode::PRECONDITION_FAILED, s).into_response(),
 
             // upstream knows better
-            Error::Token(err) => {
-                match err {
-                    biscuit_auth::error::Token::ConversionError(_) => (StatusCode::BAD_REQUEST, "couldn't convert token").into_response(),
-                    biscuit_auth::error::Token::Base64(_) => (StatusCode::BAD_REQUEST, "invalid token encoding").into_response(),
-                    biscuit_auth::error::Token::Format(_) => (StatusCode::BAD_REQUEST, "invalid token format").into_response(),
-                    _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal authentication error").into_response()
+            Error::Token(err) => match err {
+                biscuit_auth::error::Token::ConversionError(_) => {
+                    (StatusCode::BAD_REQUEST, "couldn't convert token").into_response()
                 }
-            }
+                biscuit_auth::error::Token::Base64(_) => {
+                    (StatusCode::BAD_REQUEST, "invalid token encoding").into_response()
+                }
+                biscuit_auth::error::Token::Format(_) => {
+                    (StatusCode::BAD_REQUEST, "invalid token format").into_response()
+                }
+                _ => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal authentication error",
+                )
+                    .into_response(),
+            },
             Error::MatchedPath(mpe) => mpe.into_response(),
             Error::NestedPath(e) => e.into_response(),
             Error::Extension(ee) => ee.into_response(),
@@ -93,25 +107,28 @@ impl IntoResponse for Error {
             Error::Query(e) => e.into_response(),
 
             // presumed client errors
-            Error::InvalidInput(_) |
-            Error::BadETagFormat(_) |
-            Error::InvalidHeaderValue(_) |
-            Error::Header(_) => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
+            Error::MismatchedValues(_, _, _)
+            | Error::InvalidInput(_)
+            | Error::BadETagFormat(_)
+            | Error::InvalidHeaderValue(_)
+            | Error::Header(_) => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
 
             // presumed server errors
-            Error::MissingContext |
-            Error::Unknown(_) |
-            Error::CreateString(_) |
-            Error::Deserialization(_) |
-            Error::ExtraCaptures(_) |
-            Error::IriConversion(_) |
-            Error::IriTempate(_) |
-            Error::IriValidate(_) |
-            Error::JSONSerialization(_) |
-            Error::MissingCaptures(_) |
-            Error::NoMatch(_,_) |
-            Error::Parsing(_) |
-            Error::RegexParse(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response(),
+            Error::MissingContext
+            | Error::Unknown(_)
+            | Error::CreateString(_)
+            | Error::Deserialization(_)
+            | Error::ExtraCaptures(_)
+            | Error::IriConversion(_)
+            | Error::IriTempate(_)
+            | Error::IriValidate(_)
+            | Error::JSONSerialization(_)
+            | Error::MissingCaptures(_)
+            | Error::NoMatch(_)
+            | Error::Parsing(_)
+            | Error::RegexParse(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
+            }
         }
     }
 }

@@ -1,8 +1,22 @@
+use hyper::Uri;
+use regex::Regex;
 use serde::{
     de::{self, DeserializeSeed, EnumAccess, Error, MapAccess, SeqAccess, VariantAccess, Visitor},
     forward_to_deserialize_any, Deserializer,
 };
-use std::{any::type_name, fmt, sync::Arc};
+use std::{
+    any::type_name,
+    borrow::Cow,
+    collections::{hash_map, HashMap, HashSet},
+    fmt,
+    rc::Rc,
+    sync::Arc,
+};
+
+use crate::{
+    error,
+    routing::{percent_decode, render::var_re_name, Parsed, Part, VarMod},
+};
 
 // *** Time being, this is cribbed wholesale from Axum
 
@@ -11,21 +25,18 @@ use std::{any::type_name, fmt, sync::Arc};
 // this wrapper type is used as the deserializer error to hide the `serde::de::Error` impl which
 // would otherwise be public if we used `ErrorKind` as the error directly
 #[derive(Debug)]
-pub struct CaptureDeserializationError {
+pub struct UriDeserializationError {
     pub(super) kind: ErrorKind,
 }
 
-impl CaptureDeserializationError {
+impl UriDeserializationError {
     pub(super) fn new(kind: ErrorKind) -> Self {
         Self { kind }
     }
 
     pub(super) fn wrong_number_of_parameters(got: usize, expected: usize) -> Self {
         Self {
-            kind: ErrorKind::WrongNumberOfParameters {
-                got,
-                expected,
-            }
+            kind: ErrorKind::WrongNumberOfParameters { got, expected },
         }
     }
 
@@ -35,7 +46,7 @@ impl CaptureDeserializationError {
     }
 }
 
-impl Error for CaptureDeserializationError {
+impl Error for UriDeserializationError {
     #[inline]
     fn custom<T>(msg: T) -> Self
     where
@@ -47,13 +58,13 @@ impl Error for CaptureDeserializationError {
     }
 }
 
-impl fmt::Display for CaptureDeserializationError {
+impl fmt::Display for UriDeserializationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.kind.fmt(f)
     }
 }
 
-impl std::error::Error for CaptureDeserializationError {}
+impl std::error::Error for UriDeserializationError {}
 
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -109,6 +120,10 @@ pub enum ErrorKind {
         name: &'static str,
     },
 
+    MismatchedValue {
+        expected_type: &'static str,
+    },
+
     /// Catch-all variant for errors that don't fit any other variant.
     Message(String),
 }
@@ -130,6 +145,9 @@ impl fmt::Display for ErrorKind {
                 Ok(())
             }
             ErrorKind::UnsupportedType { name } => write!(f, "Unsupported type `{name}`"),
+            ErrorKind::MismatchedValue { expected_type } => {
+                write!(f, "value not suitable for type `{expected_type}`")
+            }
             ErrorKind::ParseErrorAtKey {
                 key,
                 value,
@@ -162,7 +180,7 @@ macro_rules! unsupported_type {
         where
             V: Visitor<'de>,
         {
-            Err(CaptureDeserializationError::unsupported_type(type_name::<
+            Err(UriDeserializationError::unsupported_type(type_name::<
                 V::Value,
             >()))
         }
@@ -175,34 +193,470 @@ macro_rules! parse_single_value {
         where
             V: Visitor<'de>,
         {
-            if self.url_params.len() != 1 {
-                return Err(CaptureDeserializationError::wrong_number_of_parameters( self.url_params.len(), 1));
+            if self.varlist.len() == 1 {
+                let value = match self.varlist[0] {
+                    (_, VarBinding::Scalar(scalar)) => scalar.parse().map_err(|_| {
+                        UriDeserializationError::new(ErrorKind::ParseError {
+                            value: scalar.to_string(),
+                            expected_type: $ty,
+                        })
+                    })?,
+                    (_, VarBinding::PathExplode(_, string)) => string.parse().map_err(|_| {
+                        UriDeserializationError::new(ErrorKind::ParseError {
+                            value: string.to_string(),
+                            expected_type: $ty,
+                        })
+                    })?,
+                    (_, VarBinding::QueryExplode(_)) => {
+                        return Err(UriDeserializationError::new(ErrorKind::MismatchedValue {
+                            expected_type: $ty,
+                        }))
+                    }
+                    (_, VarBinding::Empty) => {
+                        return Err(UriDeserializationError::new(ErrorKind::ParseError {
+                            value: "<empty>".to_string(),
+                            expected_type: $ty,
+                        }))
+                    }
+                };
+                visitor.$visit_fn(value)
+            } else {
+                return Err(UriDeserializationError::wrong_number_of_parameters(
+                    self.varlist.len(),
+                    1,
+                ));
             }
-
-            let value = self.url_params[0].1.parse().map_err(|_| {
-                CaptureDeserializationError::new(ErrorKind::ParseError {
-                    value: self.url_params[0].1.to_string(),
-                    expected_type: $ty,
-                })
-            })?;
-            visitor.$visit_fn(value)
         }
     };
 }
 
-pub(crate) struct CapturesDeserializer<'de> {
-    url_params: &'de [(Arc<str>, Arc<str>)],
+pub(crate) struct UriDeserializer<'de> {
+    varlist: Vec<(String, VarBinding<'de>)>,
+    query_assocs: HashMap<Rc<str>, Rc<str>>,
 }
 
-impl<'de> CapturesDeserializer<'de> {
+impl<'de> UriDeserializer<'de> {
     #[inline]
-    pub(crate) fn new(url_params: &'de [(Arc<str>, Arc<str>)]) -> Self {
-        CapturesDeserializer { url_params }
+    pub(crate) fn new(
+        varlist: Vec<(Rc<str>, VarBinding<'de>)>,
+        query_assocs: HashMap<Rc<str>, Rc<str>>,
+    ) -> Self {
+        UriDeserializer {
+            varlist,
+            query_assocs,
+        }
     }
 }
 
-impl<'de> Deserializer<'de> for CapturesDeserializer<'de> {
-    type Error = CaptureDeserializationError;
+enum VarBinding<'a> {
+    Scalar(&'a str),
+    PathExplode(Rc<str>, Rc<str>), // sep, string value
+    QueryExplode(Vec<Rc<str>>),
+    Empty,
+}
+
+fn parsed_template_vars(parsed: &Parsed) -> Vec<String> {
+    parsed
+        .parts_iter()
+        .filter_map(|part| match part {
+            Part::Lit(_) => None,
+            Part::Expression(expression)
+            | Part::SegVar(expression)
+            | Part::SegPathVar(expression)
+            | Part::SegRest(expression)
+            | Part::SegPathRest(expression) => Some(
+                expression
+                    .varspecs
+                    .iter()
+                    .map(|vs| vs.varname.clone())
+                    .collect::<Vec<_>>(),
+            ),
+        })
+        .flatten()
+        .collect::<Vec<_>>()
+}
+
+//   * Parser Path Scalar names
+//   Need to emit (capture,varname) - usually (x,x) but sometimes (x,x_p3)
+fn path_scalar_names(parsed: &Parsed) -> HashMap<&str, String> {
+    let mut result = HashMap::new();
+    use Part::*;
+    for part in parsed.nonquery_parts_iter() {
+        match part {
+            // PATH
+            SegRest(exp) | SegPathRest(exp) | SegVar(exp) | SegPathVar(exp) => {
+                for v in &exp.varspecs {
+                    match v.modifier {
+                        VarMod::None => {
+                            let name = v.varname.as_str();
+                            result.insert(name, name.to_string()); // SCALAR
+                        }
+                        VarMod::Prefix(_) => {
+                            // XXX edge case: should be the longest prefix
+                            result.insert(v.varname.as_str(), var_re_name(&v));
+                        }
+                        VarMod::Explode => (),
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+    result
+}
+//   * Parser Query Scalar names
+fn query_scalar_names(parsed: &Parsed) -> HashSet<&str> {
+    use Part::*;
+    parsed
+        .query_parts_iter()
+        .filter_map(|part| match part {
+            // QUERY
+            SegRest(exp) | SegPathRest(exp) | SegVar(exp) | SegPathVar(exp) => {
+                Some(
+                    exp.varspecs
+                        .iter()
+                        .filter_map(|v| match v.modifier {
+                            VarMod::None | VarMod::Prefix(_) => Some(v.varname.as_str()), // SCALAR
+                            _ => None,
+                        })
+                        .collect::<Vec<&str>>(),
+                )
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+//   * Parser Path Explode names - might need the joiner in order to split them
+fn path_explode_names(parsed: &Parsed) -> Vec<(&str, &str)> {
+    use Part::*;
+    parsed
+        .nonquery_parts_iter()
+        .filter_map(|part| match part {
+            // PATH
+            SegRest(exp) | SegPathRest(exp) | SegVar(exp) | SegPathVar(exp) => {
+                Some(
+                    exp.varspecs
+                        .iter()
+                        .filter_map(|v| match v.modifier {
+                            VarMod::Explode => Some((exp.operator.separator(), v.varname.as_str())), // EXPLODE
+                            _ => None,
+                        })
+                        .collect::<Vec<(&str, &str)>>(),
+                )
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+//   * Parser Query Explode names
+fn query_explode_names(parsed: &Parsed) -> HashSet<&str> {
+    use Part::*;
+    parsed
+        .query_parts_iter()
+        .filter_map(|part| match part {
+            // QUERY
+            SegRest(exp) | SegPathRest(exp) | SegVar(exp) | SegPathVar(exp) => {
+                Some(
+                    exp.varspecs
+                        .iter()
+                        .filter_map(|v| match v.modifier {
+                            VarMod::Explode => Some(v.varname.as_str()), // EXPLODE
+                            _ => None,
+                        })
+                        .collect::<Vec<&str>>(),
+                )
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+impl<'de> UriDeserializer<'_> {
+    // XXX &Uri?
+    // The deserializer will need:
+    // * KV of scalars
+    // * KV of (joiner, list) or (scalar, split list) from path explodes
+    // * KV of Option<lists> from query explodes
+    // Path lists need their joiner provided
+    // Note: queries can provide keys not in the template,
+    // because {?assoc*} (only that case)
+    //
+    // During URI parsing,
+    // * same key with different values: Error
+    // * path lists in preference to query lists
+    //
+    // Deserialization: exactly one map/struct can consume
+    // {?assoc*} fields. Rule is:
+    //
+    // Field is named in template: it gets the value provided
+    // One field (map/struct) not named in template: all the unnamed scalars
+    // A second complex field not named in template: Error
+    //
+    // Explicitly ignoring order of visit, e.g. with Default rules
+    // (derive(Route) should be able to compare template to fields and (possibly) panic)
+    // Note: template doesn't know field types,
+    // so multiple explode _could_ all (or all but one) be lists.
+    // The URI presented also doesn't make it clear: multiple missing explodes... might just be empty lists
+    //
+    // path list with scalar field: gets the value as provided
+    //  with seq field, split with joiner
+    //
+    // query list with scalar field: error
+    //
+    // scalar with seq field: split on ,
+    // scalar with map field: split on , into pairs
+    //
+    //
+    // Inputs here:
+    //   * Parser Path Scalar names
+    //   * Parser Path Explode names
+    //   * Parser Query Scalar names
+    //   * Parser Query Explode names
+    //   * Regex Path captures
+    //   * Form query pairs
+    //
+    //
+    // Part of the logic here:
+    //
+    //                     DeserializeTarget
+    //                         scalar       seq
+    // Template
+    // --------------------+------------+-------------
+    // Mod::None           |   idem     |   split(",")
+    // Path, Mod::Explode  | "/seg/seg" | split(joiner)
+    // Query, Mod::Explode |  Error     |
+    //
+    // How should we handle prefix catpures in regex (e.g. foo_p5)?
+    // How should we handle prefixes in queries?
+    //
+    // IMO {?var:3} is a _mistake_ not an error
+    // 6570 doesn't have a way to rename that field, so e.g.
+    // {?var:3,var} would -> ?var=val&var=value
+    // Feels, atm, like an edge case. Let's: scalar value conflict error
+    //
+    // That said, I can see wanting to parse limited size values, so let's
+    // ensure that the longest templated prefex is captured as the value
+    // In the paths, we can (probably) collect the prefix forms and choose the longest
+    // In queries, authors should note (and ideally get a good error) that
+    // scalar values can't use different prefix counts
+    //
+    // Query prefix should be checked by derive(Route) and here.
+    //
+    // More logic: if the template provides
+    //
+    //            query_var
+    //
+    // path var     nomod       prefix[n]     prefix[M]
+    //
+    // nomod        must equal  path wins
+    //                          must prefix?
+    // prefix[n]    query wins  must equal    must prefix,
+    //                                        largest wins
+    //
+    //  use _values_ to check prefixing and length
+    //  IOW: if a variable repeats, new value must be a prefix of old
+    //  or v/v. Longest is new value. Not a prefix? Error.
+    //  For same length, devolves to equality, and we don't have to record
+    //  anything about what the template said.
+    //
+    //  XXX It's an error to reuse a capture group name in Regex
+    //
+    //  XXX As is, a varname can be both a scalar and complex, which seems like a weird edge case
+    //      That's true both within path/query, and between (i.e. scalar path, list query)
+    //      However!! that's a problem with template, which should be validated separately
+    //      (and before it goes into the main MAP
+    //
+    //  Key realization: template issues should already have been validated
+    //  * TODO: template validation post-parse
+    //  * Template errors here can panic
+    //  * URI errors (e.g. same variable, different values) should raise errors
+    /// Creates a UriDeserializer for a Uri, a Parsed route template and the compiled regex for
+    /// the Parsed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the template has invalid overlaps between scalar and complex variables.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if
+    pub(crate) fn for_uri(
+        uri: &'de Uri,
+        parsed: &'de Parsed,
+        regex: &Regex,
+    ) -> Result<UriDeserializer<'de>, error::Error> {
+        let mut scalars: HashMap<&'de str, &'de str> = HashMap::new();
+        let mut path_explodes: HashMap<&str, (Rc<str>, Rc<str>)> = HashMap::new();
+        let mut query_explodes: HashMap<&str, Option<Vec<Rc<str>>>> = HashMap::new();
+        let mut query_assocs: HashMap<Rc<str>, Rc<str>> = HashMap::new();
+        // definitely considering a secondary Nom parser instead of RE here.
+        let path = uri.path();
+        let url = match (uri.scheme_str(), uri.authority().map(|a| a.as_str())) {
+            (Some(scheme), Some(auth)) => &format!("{scheme}://{auth}{path}"),
+            (None, Some(auth)) => &format!("//{auth}{path}"),
+            (Some(scheme), None) => &format!("{scheme}://{path}"),
+            (None, None) => path,
+        };
+
+        let caps = regex
+            .captures(url)
+            .ok_or_else(|| error::Error::NoMatch(url.to_string()))?;
+
+        let query_parse = match (parsed.query.is_some(), uri.query()) {
+            (false, None) |
+            (false, Some(_)) | // XXX Error? (if you want to accept abitrary queries, {?ignored*}
+            (true,  None) => form_urlencoded::parse(&[]),
+            (true, Some(q)) => form_urlencoded::parse(q.as_bytes()),
+        };
+
+        let mut new_scalar = |var_name: &str, m: &str| -> Result<(), error::Error> {
+            if let Some(new_val) = percent_decode(m) {
+                if let Some(val) = scalars.get(var_name) {
+                    if val.len() > new_val.len() {
+                        if !val.starts_with(&*new_val) {
+                            return Err(error::Error::MismatchedValues(
+                                var_name.to_string(),
+                                val.to_string(),
+                                new_val.to_string(),
+                            ));
+                        } // else we already have the longest value
+                    } else if new_val.starts_with(*val) {
+                        scalars.insert(var_name, &new_val);
+                    } else {
+                        return Err(error::Error::MismatchedValues(
+                            var_name.to_string(),
+                            val.to_string(),
+                            new_val.to_string(),
+                        ));
+                    }
+                } else {
+                    scalars.insert(var_name, &new_val);
+                }
+            };
+            Ok(())
+        };
+
+        let query_scalar_names = query_scalar_names(parsed);
+        let query_explode_names = query_explode_names(parsed);
+        for (cow_var_name, cow_value) in query_parse {
+            let var_name: Rc<str> = cow_var_name.into_owned().into();
+            let value: Rc<str> = cow_value.into_owned().into();
+
+            if query_scalar_names.contains(var_name.as_ref()) {
+                new_scalar(&var_name, &value)?
+            } else if query_explode_names.contains(var_name.as_ref()) {
+                match query_explodes.entry(&var_name) {
+                    hash_map::Entry::Occupied(mut entry) => match entry.get() {
+                        Some::<Vec<_>>(ref mut exes) => exes.push(value.clone()),
+                        None => {
+                            entry.insert(Some(vec![value.clone()]));
+                        }
+                    },
+                    hash_map::Entry::Vacant(entry) => {
+                        entry.insert(Some(vec![value.clone()]));
+                    }
+                }
+            } else {
+                match query_assocs.entry(var_name.as_ref().into()) {
+                    hash_map::Entry::Occupied(entry) => {
+                        let old_val = entry.get();
+                        if &value != old_val {
+                            return Err(error::Error::MismatchedValues(
+                                var_name.to_string(),
+                                old_val.to_string(),
+                                value.to_string(),
+                            ));
+                        }
+                    }
+                    hash_map::Entry::Vacant(entry) => {
+                        entry.insert(value);
+                    }
+                }
+            }
+        }
+        for x_name in query_explode_names {
+            query_explodes.entry(x_name).or_default();
+        }
+
+        let names = path_scalar_names(parsed);
+        for (var_name, re_name) in names {
+            if let Some(m) = caps.name(&re_name) {
+                new_scalar(var_name, m.as_str())?
+            }
+        }
+        for (sep, var_name) in path_explode_names(parsed) {
+            if let Some(m) = caps.name(&var_name) {
+                if let Some(dec) = percent_decode(m.as_str()) {
+                    path_explodes.insert(var_name, (sep.into(), dec));
+                }
+            }
+        }
+
+        let varlist = parsed_template_vars(parsed)
+            .iter()
+            .map(move |vname| {
+                match (
+                    scalars.get(vname.as_str()),
+                    path_explodes.get(vname.as_str()),
+                    query_explodes.get(vname.as_str()),
+                ) {
+                    (Some(scalar), None, None) => Ok((vname.clone(), VarBinding::Scalar(*scalar))),
+                    (None, Some((sep, string)), None) => Ok((
+                        vname.clone(),
+                        VarBinding::PathExplode(sep.clone(), string.clone()),
+                    )),
+                    (None, None, Some(query)) => match query {
+                        Some(q) => Ok((vname.clone(), VarBinding::QueryExplode(q.clone()))),
+                        None => Ok((vname.clone(), VarBinding::Empty)),
+                    },
+                    (None, Some((sep, string)), Some(maybe_query)) => {
+                        let path_vec = string
+                            .split(sep.as_ref())
+                            .map(|part| part.into())
+                            .collect::<Vec<Rc<str>>>();
+                        if let Some(query) = maybe_query {
+                            if path_vec == *query {
+                                Ok((
+                                    vname.clone(),
+                                    VarBinding::PathExplode(sep.clone(), string.clone()),
+                                ))
+                            } else {
+                                Err(error::Error::MismatchedValues(
+                                    vname.to_string(),
+                                    string.to_string(),
+                                    query.join(sep),
+                                ))
+                            }
+                        } else {
+                            Err(error::Error::MismatchedValues(
+                                vname.to_string(),
+                                string.to_string(),
+                                "".to_string(),
+                            ))
+                        }
+                    }
+                    (None, None, None) => Ok((vname.clone(), VarBinding::Empty)),
+                    (Some(_), Some(_), _) => {
+                        panic!("scalar and path explode should be caught in template parse")
+                    }
+                    (Some(_), _, Some(_)) => {
+                        panic!("scalar and query explode should be caught in template parse")
+                    }
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(UriDeserializer {
+            varlist,
+            query_assocs,
+        })
+    }
+}
+
+impl<'de> Deserializer<'de> for UriDeserializer<'de> {
+    type Error = UriDeserializationError;
 
     unsupported_type!(deserialize_bytes);
     unsupported_type!(deserialize_option);
@@ -237,10 +691,14 @@ impl<'de> Deserializer<'de> for CapturesDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        if self.url_params.len() != 1 {
-            return Err(CaptureDeserializationError::wrong_number_of_parameters(self.url_params.len(), 1));
+        if self.varlist.len() != 1 {
+            return Err(UriDeserializationError::wrong_number_of_parameters(
+                self.varlist.len(),
+                1,
+            ));
         }
-        visitor.visit_borrowed_str(&self.url_params[0].1)
+        match self.varlist[0] {}
+        //visitor.visit_borrowed_str(&self.url_params[0].1)
     }
 
     fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -287,7 +745,10 @@ impl<'de> Deserializer<'de> for CapturesDeserializer<'de> {
         V: Visitor<'de>,
     {
         if self.url_params.len() < len {
-            return Err(CaptureDeserializationError::wrong_number_of_parameters( self.url_params.len(), len));
+            return Err(UriDeserializationError::wrong_number_of_parameters(
+                self.url_params.len(),
+                len,
+            ));
         }
         visitor.visit_seq(SeqDeserializer {
             params: self.url_params,
@@ -305,7 +766,10 @@ impl<'de> Deserializer<'de> for CapturesDeserializer<'de> {
         V: Visitor<'de>,
     {
         if self.url_params.len() < len {
-            return Err(CaptureDeserializationError::wrong_number_of_parameters( self.url_params.len(), len));
+            return Err(UriDeserializationError::wrong_number_of_parameters(
+                self.url_params.len(),
+                len,
+            ));
         }
         visitor.visit_seq(SeqDeserializer {
             params: self.url_params,
@@ -346,7 +810,10 @@ impl<'de> Deserializer<'de> for CapturesDeserializer<'de> {
         V: Visitor<'de>,
     {
         if self.url_params.len() != 1 {
-            return Err(CaptureDeserializationError::wrong_number_of_parameters( self.url_params.len(), 1));
+            return Err(UriDeserializationError::wrong_number_of_parameters(
+                self.url_params.len(),
+                1,
+            ));
         }
 
         visitor.visit_enum(EnumDeserializer {
@@ -362,7 +829,7 @@ struct MapDeserializer<'de> {
 }
 
 impl<'de> MapAccess<'de> for MapDeserializer<'de> {
-    type Error = CaptureDeserializationError;
+    type Error = UriDeserializationError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
@@ -388,7 +855,7 @@ impl<'de> MapAccess<'de> for MapDeserializer<'de> {
                 key: self.key.take(),
                 value,
             }),
-            None => Err(CaptureDeserializationError::custom("value is missing")),
+            None => Err(UriDeserializationError::custom("value is missing")),
         }
     }
 }
@@ -409,7 +876,7 @@ macro_rules! parse_key {
 }
 
 impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
-    type Error = CaptureDeserializationError;
+    type Error = UriDeserializationError;
 
     parse_key!(deserialize_identifier);
     parse_key!(deserialize_str);
@@ -419,7 +886,7 @@ impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        Err(CaptureDeserializationError::custom("Unexpected key type"))
+        Err(UriDeserializationError::custom("Unexpected key type"))
     }
 
     forward_to_deserialize_any! {
@@ -449,9 +916,9 @@ macro_rules! parse_value {
                             expected_type: $ty,
                         },
                     };
-                    CaptureDeserializationError::new(kind)
+                    UriDeserializationError::new(kind)
                 } else {
-                    CaptureDeserializationError::new(ErrorKind::ParseError {
+                    UriDeserializationError::new(ErrorKind::ParseError {
                         value: self.value.to_string(),
                         expected_type: $ty,
                     })
@@ -469,7 +936,7 @@ struct ValueDeserializer<'de> {
 }
 
 impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
-    type Error = CaptureDeserializationError;
+    type Error = UriDeserializationError;
 
     unsupported_type!(deserialize_map);
     unsupported_type!(deserialize_identifier);
@@ -558,7 +1025,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
         }
 
         impl<'de> SeqAccess<'de> for PairDeserializer<'de> {
-            type Error = CaptureDeserializationError;
+            type Error = UriDeserializationError;
 
             fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
             where
@@ -592,7 +1059,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
                 None => unreachable!(),
             }
         } else {
-            Err(CaptureDeserializationError::unsupported_type(type_name::<
+            Err(UriDeserializationError::unsupported_type(type_name::<
                 V::Value,
             >()))
         }
@@ -602,7 +1069,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        Err(CaptureDeserializationError::unsupported_type(type_name::<
+        Err(UriDeserializationError::unsupported_type(type_name::<
             V::Value,
         >()))
     }
@@ -616,7 +1083,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        Err(CaptureDeserializationError::unsupported_type(type_name::<
+        Err(UriDeserializationError::unsupported_type(type_name::<
             V::Value,
         >()))
     }
@@ -630,7 +1097,7 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        Err(CaptureDeserializationError::unsupported_type(type_name::<
+        Err(UriDeserializationError::unsupported_type(type_name::<
             V::Value,
         >()))
     }
@@ -660,7 +1127,7 @@ struct EnumDeserializer<'de> {
 }
 
 impl<'de> EnumAccess<'de> for EnumDeserializer<'de> {
-    type Error = CaptureDeserializationError;
+    type Error = UriDeserializationError;
     type Variant = UnitVariant;
 
     fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
@@ -677,7 +1144,7 @@ impl<'de> EnumAccess<'de> for EnumDeserializer<'de> {
 struct UnitVariant;
 
 impl<'de> VariantAccess<'de> for UnitVariant {
-    type Error = CaptureDeserializationError;
+    type Error = UriDeserializationError;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
         Ok(())
@@ -687,7 +1154,7 @@ impl<'de> VariantAccess<'de> for UnitVariant {
     where
         T: DeserializeSeed<'de>,
     {
-        Err(CaptureDeserializationError::unsupported_type(
+        Err(UriDeserializationError::unsupported_type(
             "newtype enum variant",
         ))
     }
@@ -696,7 +1163,7 @@ impl<'de> VariantAccess<'de> for UnitVariant {
     where
         V: Visitor<'de>,
     {
-        Err(CaptureDeserializationError::unsupported_type(
+        Err(UriDeserializationError::unsupported_type(
             "tuple enum variant",
         ))
     }
@@ -709,7 +1176,7 @@ impl<'de> VariantAccess<'de> for UnitVariant {
     where
         V: Visitor<'de>,
     {
-        Err(CaptureDeserializationError::unsupported_type(
+        Err(UriDeserializationError::unsupported_type(
             "struct enum variant",
         ))
     }
@@ -721,7 +1188,7 @@ struct SeqDeserializer<'de> {
 }
 
 impl<'de> SeqAccess<'de> for SeqDeserializer<'de> {
-    type Error = CaptureDeserializationError;
+    type Error = UriDeserializationError;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where
@@ -786,7 +1253,7 @@ mod tests {
             #[allow(clippy::bool_assert_comparison)]
             {
                 let url_params = create_url_params(vec![("value", $value_str)]);
-                let deserializer = CapturesDeserializer::new(&url_params);
+                let deserializer = UriDeserializer::new(&url_params, None);
                 assert_eq!(<$ty>::deserialize(deserializer).unwrap(), $value);
             }
         };
@@ -816,12 +1283,12 @@ mod tests {
 
         let url_params = create_url_params(vec![("a", "B")]);
         assert_eq!(
-            MyEnum::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            MyEnum::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             MyEnum::B
         );
 
         let url_params = create_url_params(vec![("a", "1"), ("b", "2")]);
-        let error_kind = i32::deserialize(CapturesDeserializer::new(&url_params))
+        let error_kind = i32::deserialize(UriDeserializer::new(&url_params, None))
             .unwrap_err()
             .kind;
         assert!(matches!(
@@ -837,26 +1304,26 @@ mod tests {
     fn test_parse_seq() {
         let url_params = create_url_params(vec![("a", "1"), ("b", "true"), ("c", "abc")]);
         assert_eq!(
-            <(i32, bool, String)>::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            <(i32, bool, String)>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             (1, true, "abc".to_owned())
         );
 
         #[derive(Debug, Deserialize, Eq, PartialEq)]
         struct TupleStruct(i32, bool, String);
         assert_eq!(
-            TupleStruct::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            TupleStruct::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             TupleStruct(1, true, "abc".to_owned())
         );
 
         let url_params = create_url_params(vec![("a", "1"), ("b", "2"), ("c", "3")]);
         assert_eq!(
-            <Vec<i32>>::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            <Vec<i32>>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             vec![1, 2, 3]
         );
 
         let url_params = create_url_params(vec![("a", "c"), ("a", "B")]);
         assert_eq!(
-            <Vec<MyEnum>>::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            <Vec<MyEnum>>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             vec![MyEnum::C, MyEnum::B]
         );
     }
@@ -865,7 +1332,7 @@ mod tests {
     fn test_parse_seq_tuple_string_string() {
         let url_params = create_url_params(vec![("a", "foo"), ("b", "bar")]);
         assert_eq!(
-            <Vec<(String, String)>>::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            <Vec<(String, String)>>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             vec![
                 ("a".to_owned(), "foo".to_owned()),
                 ("b".to_owned(), "bar".to_owned())
@@ -877,7 +1344,7 @@ mod tests {
     fn test_parse_seq_tuple_string_parse() {
         let url_params = create_url_params(vec![("a", "1"), ("b", "2")]);
         assert_eq!(
-            <Vec<(String, u32)>>::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            <Vec<(String, u32)>>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             vec![("a".to_owned(), 1), ("b".to_owned(), 2)]
         );
     }
@@ -886,7 +1353,7 @@ mod tests {
     fn test_parse_struct() {
         let url_params = create_url_params(vec![("a", "1"), ("b", "true"), ("c", "abc")]);
         assert_eq!(
-            Struct::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            Struct::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             Struct {
                 c: "abc".to_owned(),
                 b: true,
@@ -904,7 +1371,7 @@ mod tests {
             ("d", "false"),
         ]);
         assert_eq!(
-            Struct::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            Struct::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             Struct {
                 c: "abc".to_owned(),
                 b: true,
@@ -922,7 +1389,7 @@ mod tests {
             ("d", "false"),
         ]);
         assert_eq!(
-            <(&str, bool, u32)>::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            <(&str, bool, u32)>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
             ("abc", true, 1)
         );
     }
@@ -931,7 +1398,8 @@ mod tests {
     fn test_parse_map() {
         let url_params = create_url_params(vec![("a", "1"), ("b", "true"), ("c", "abc")]);
         assert_eq!(
-            <HashMap<String, String>>::deserialize(CapturesDeserializer::new(&url_params)).unwrap(),
+            <HashMap<String, String>>::deserialize(UriDeserializer::new(&url_params, None))
+                .unwrap(),
             [("a", "1"), ("b", "true"), ("c", "abc")]
                 .iter()
                 .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
@@ -946,7 +1414,7 @@ mod tests {
             $expected_error_kind:expr $(,)?
         ) => {
             let url_params = create_url_params($params);
-            let actual_error_kind = <$ty>::deserialize(CapturesDeserializer::new(&url_params))
+            let actual_error_kind = <$ty>::deserialize(UriDeserializer::new(&url_params, None))
                 .unwrap_err()
                 .kind;
             assert_eq!(actual_error_kind, $expected_error_kind);

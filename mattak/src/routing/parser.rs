@@ -8,6 +8,81 @@ use nom::{
     IResult,
 };
 
+/*
+* Reviewing in 8/25, I remember thinking that RFC 6570 URITemplates couldn't
+* be used to extract a context from a URI. I don't remember why, and am annoyed
+* that I didn't record that understanding here.
+*
+* The intersection described below (3986,6570,matchit) might be accurate,
+* but the reasoning is recorded. Maybe part of that was so that we could
+* do extraction?
+*
+* One inhibiting situation: the `regex` crate doesn't support mutliple captures for
+* a group, which makes repeating patterns e.g. {/list*} annoying to use Regex for.
+* Alternatives to consider: a dynamic Nom parser, matchit, from_urlencoded in some
+* combinations
+*
+* Distinguishing: parse from extract here.
+*   Parse: what this module does with a language reduced from RFC 6570
+*   Extract: using parsed strings to pull data from a URI
+*   Also: Template: the process described in RFC 6570 to convert a URI tempalte + context into a
+*   URI
+*
+* First: how is our language reduced from RFC 6570?
+*
+*   General URITemplates allow for repeats (* or +) in any position.
+*   In order to distinguish variables on extraction, we can only allow
+*   a single repeat at the end of the path (but any number of query repeats)
+*   (theoretically, very specific path repeats could be allowed)
+*
+*   Prefixes are allowed, but the full variable needs to be present as well
+*   {/foo:3}{/foo} - ok
+*
+*   Fragments are allowed but lost during parse
+*
+*   We do not (yet) support nested associated arrays in explode patterns
+*   but the "dot hierarchy" shouldn't be too difficult. Still, it seems overly complex.
+*
+*
+*
+*
+* Second: how does the extraction work? Is template/extract inverses? (probably not)
+* What about template over the contexts that can be extracted?
+* In terms of parsing, how restrictive is the language?
+* Do we need a type for the context to answer that?
+* One particular: do we reject URIs with queries that we don't match?
+*   6570: {?keys*} expands to ?a=1&b=2&c=3, so authors can explicitly allow that if they want.
+*   Serde: "deny_unknown_fields", otherwise ignored
+*   Serde: "default" allows missing fields to be set default
+*   We ignore fragments in extraction, assuming that backend APIs won't be send fragments.
+*
+* Route has a helper attribute for "ignoring" so that an author can say
+* XXX (not yet...  25-08-11)
+* "here's part of the template that's allowed but I don't care about"
+* with e.g. template("/post{?rest*}") ignore(rest)
+* or template("/search{?query,type}{&rest*}") ignore(rest)
+*
+* In that case, you might have
+* ```
+* #serde(default)
+* query: Option<String>
+* ```
+*
+* Mechanically, we have an interaction between
+* derive(Route) // mattak
+* derive(Deserialize) // serde
+* Parsed // this module
+* FromRequestParts // axum
+* extract::Extract // mattak, maybe rename XXX 25-08-11
+*
+* Derserializer {
+*   template: Parsed
+*   uri: Uri
+* }
+*
+*
+*/
+
 
 /* We're parsing a terrible hybrid of
 * RFC 3986 (just paths)
@@ -81,6 +156,9 @@ impl Parsed {
     pub(super) fn nonquery_parts_iter(&self) -> impl Iterator<Item = &Part> {
         self.auth.iter().flatten()
             .chain(self.path.iter())
+    }
+    pub(super) fn query_parts_iter(&self) -> impl Iterator<Item = &Part> {
+        self.query.iter().flatten()
     }
 }
 

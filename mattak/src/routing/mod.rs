@@ -1,53 +1,74 @@
 use std::{
-    collections::{HashMap, HashSet}, sync::{Arc, Mutex, OnceLock, RwLock}
+    collections::{hash_map, HashMap, HashSet},
+    hash::Hash,
+    sync::{Arc, Mutex, OnceLock, RwLock},
 };
 
+use hyper::Uri;
 use iri_string::{
     spec::IriSpec,
-    template::{
-        DynamicContext, UriTemplateStr, UriTemplateString
-    }, types::IriReferenceString
+    template::{DynamicContext, UriTemplateStr, UriTemplateString},
+    types::IriReferenceString,
 };
 use regex::Regex;
 use render::fill_parts;
 use serde::de::DeserializeOwned;
 use tracing::{debug, trace};
 
-use crate::error::Error;
+use crate::{
+    error::Error,
+    routing::{parser::VarMod, render::var_re_name},
+};
 
 use self::{
     parser::{Parsed, Part},
-    render::{auth_re_string, axum7_rest, axum7_vars, original_string, path_re_string, re_names}
+    render::{auth_re_string, axum7_rest, axum7_vars, original_string, path_re_string, re_names},
 };
 
+use typemap_ors::ShareMap;
+
+mod de;
+mod extract;
 mod parser;
 mod render;
-mod de;
-pub use de::CaptureDeserializationError;
+pub use de::UriDeserializationError;
 
 pub use iri_string::template::context;
 
 /// This is used by the Route derive macro to validate that templates align with fields
-/// Not advised for general use - the parse of the template might panic, and isn't cacched anywhere.
+/// Not advised for general use - the parse of the template might panic, and isn't cached anywhere.
 /// Instead, see route_config
 pub fn template_vars(template: &str) -> Vec<String> {
     let parsed = parser::parse(template).unwrap();
 
-    parsed.nonquery_parts_iter().filter_map(|part|
-        match part {
+    parsed
+        .nonquery_parts_iter()
+        .filter_map(|part| match part {
             Part::Lit(_) => None,
-            Part::Expression(expression) |
-            Part::SegVar(expression) |
-            Part::SegPathVar(expression) |
-            Part::SegRest(expression) |
-            Part::SegPathRest(expression) =>
-                Some(expression.varspecs.iter().map(|vs| vs.varname.clone()).collect::<Vec<_>>()),
-        }
-
-    ).flatten().collect::<Vec<_>>()
+            Part::Expression(expression)
+            | Part::SegVar(expression)
+            | Part::SegPathVar(expression)
+            | Part::SegRest(expression)
+            | Part::SegPathRest(expression) => Some(
+                expression
+                    .varspecs
+                    .iter()
+                    .map(|vs| vs.varname.clone())
+                    .collect::<Vec<_>>(),
+            ),
+        })
+        .flatten()
+        .collect::<Vec<_>>()
 }
 
-pub trait RouteTemplate: Clone {
+pub trait Route {
+    fn route_template() -> RouteTemplateString;
+}
+
+pub trait RouteTemplate: Clone + Hash + Send + Sync + Eq
+where
+    Self: 'static,
+{
     // XXX really nice to have this as an associated method...
     // Would like this one structs and have it work with Self,
     // and maybe with Enum instances.
@@ -62,8 +83,14 @@ pub trait RouteTemplate: Clone {
     }
 }
 
-#[derive(Clone)]
-pub struct RouteTemplateString(String);
+struct RTKey<RT: RouteTemplate>(RT);
+
+impl<RT: RouteTemplate + 'static> typemap_ors::Key for RTKey<RT> {
+    type Value = Arc<Mutex<Map<RT>>>;
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct RouteTemplateString(pub String);
 
 impl RouteTemplate for RouteTemplateString {
     fn route_template(&self) -> String {
@@ -71,45 +98,69 @@ impl RouteTemplate for RouteTemplateString {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct Map {
-    templates: HashMap<String, String>,
-    store: HashMap<String, Arc<RwLock<InnerSingle>>>
+pub(crate) struct Map<RT: RouteTemplate> {
+    templates: HashMap<RT, String>,
+    store: HashMap<String, Arc<RwLock<InnerSingle>>>,
 }
 
-static THE_MAP:  OnceLock<Arc<Mutex<Map>>> = OnceLock::new();
-
-fn the_map() -> Arc<Mutex<Map>> {
-    THE_MAP.get_or_init(|| Arc::new(Mutex::new(Map::default()))).clone()
+impl<RT: RouteTemplate> Default for Map<RT> {
+    fn default() -> Self {
+        Self {
+            templates: Default::default(),
+            store: Default::default(),
+        }
+    }
 }
 
-impl Map {
-    fn named(&mut self, rt: impl RouteTemplate) -> Result<Arc<RwLock<InnerSingle>>, Error> {
-        let template = rt.route_template();
-        let template = self.templates.entry(template.clone()).or_insert(template);
+// static THE_MAP:  OnceLock<Arc<Mutex<Map>>> = OnceLock::new();
+static THE_MAP: OnceLock<Arc<Mutex<ShareMap>>> = OnceLock::new();
+
+fn the_map<RT: RouteTemplate + 'static>() -> Arc<Mutex<Map<RT>>> {
+    let arcmutex = THE_MAP
+        .get_or_init(|| Arc::new(Mutex::new(ShareMap::custom())))
+        .clone();
+    let mut typed = arcmutex.lock().expect("type map not to be poisoned");
+    typed
+        .entry::<RTKey<RT>>()
+        .or_insert_with(|| Arc::new(Mutex::new(Map::<RT>::default())))
+        .clone()
+}
+
+impl<RT: RouteTemplate> Map<RT> {
+    fn named(&mut self, rt: RT) -> Result<Arc<RwLock<InnerSingle>>, Error> {
+        let template = self
+            .templates
+            .entry(rt.clone())
+            .or_insert(rt.route_template());
         if self.store.contains_key(template) {
-            self.store.get(template)
-                .ok_or(Error::Parsing("couldn't get value for contained key".to_string()))
+            self.store
+                .get(template)
+                .ok_or(Error::Parsing(
+                    "couldn't get value for contained key".to_string(),
+                ))
                 .cloned()
         } else {
-            let route = Arc::new(RwLock::new(InnerSingle{
-                parsed: parser::parse(template) .map_err(|e| Error::Parsing(format!("{:?}", e)))?,
+            let route = Arc::new(RwLock::new(InnerSingle {
+                parsed: parser::parse(template).map_err(|e| Error::Parsing(format!("{:?}", e)))?,
                 ..InnerSingle::default()
             }));
             self.store.insert(template.to_string(), route);
-            self.store.get(template)
-                .ok_or(Error::Parsing("couldn't get value for just-inserted key".to_string()))
+            self.store
+                .get(template)
+                .ok_or(Error::Parsing(
+                    "couldn't get value for just-inserted key".to_string(),
+                ))
                 .cloned()
         }
     }
 }
 
-pub fn route_config(rm: impl RouteTemplate) -> Entry {
+pub fn route_config(rm: impl RouteTemplate + 'static) -> Entry {
     let arcmutex = the_map();
     let mut map = arcmutex.lock().expect("route map not to be poisoned");
     let inner = map.named(rm).expect("routes to be parseable");
-    Entry{
-        inner: inner.clone()
+    Entry {
+        inner: inner.clone(),
     }
 }
 
@@ -118,21 +169,21 @@ pub(crate) enum FillPolicy {
     Relaxed,
     NoMissing,
     NoExtra,
-    Strict
+    Strict,
 }
 
-use iri_string::template::context::{Visitor, Context};
+use iri_string::template::context::{Context, Visitor};
 
 pub trait Listable {
     fn list_vars(&self) -> Vec<String>;
 }
 
 #[derive(Clone)]
-pub struct VarsList<L: IntoIterator<Item = (String, String)>>( pub L );
+pub struct VarsList<L: IntoIterator<Item = (String, String)>>(pub L);
 
 impl<L: Clone + IntoIterator<Item = (String, String)>> Listable for VarsList<L> {
     fn list_vars(&self) -> Vec<String> {
-        self.0.clone().into_iter().map(|(k,_)| k.clone()).collect()
+        self.0.clone().into_iter().map(|(k, _)| k.clone()).collect()
     }
 }
 
@@ -140,9 +191,9 @@ impl<L: Clone + IntoIterator<Item = (String, String)>> Context for VarsList<L> {
     fn visit<V: Visitor>(&self, visitor: V) -> V::Result {
         let visited = visitor.var_name().as_str();
         // barf - complexity here is awful
-        match self.0.clone().into_iter().find(|(k,_)| k == visited) {
-            Some((_,v)) => visitor.visit_string(v),
-            None => visitor.visit_undefined()
+        match self.0.clone().into_iter().find(|(k, _)| k == visited) {
+            Some((_, v)) => visitor.visit_string(v),
+            None => visitor.visit_undefined(),
         }
     }
 }
@@ -151,28 +202,28 @@ pub(crate) struct PolicyContext<C: Context + Listable> {
     provided: HashSet<String>,
     extra: HashSet<String>,
     missing: HashSet<String>,
-    inner: C
+    inner: C,
 }
 
 impl<C: Context + Listable> PolicyContext<C> {
     fn new(inner: C) -> Self {
-        Self{
+        Self {
             provided: HashSet::new(),
             extra: HashSet::new(),
             missing: HashSet::new(),
-            inner
+            inner,
         }
     }
 
     fn check(&self, policy: FillPolicy) -> Result<(), Error> {
         match (policy, self.missing.is_empty(), self.extra.is_empty()) {
-            (FillPolicy::Strict, false, _) |
-            (FillPolicy::NoMissing, false, _) =>
-                Err(Error::MissingCaptures(self.missing.iter().cloned().collect())),
-            (FillPolicy::Strict, _, false) |
-            (FillPolicy::NoExtra, _, false) =>
-                Err(Error::ExtraCaptures(self.extra.iter().cloned().collect())),
-            _ => Ok(())
+            (FillPolicy::Strict, false, _) | (FillPolicy::NoMissing, false, _) => Err(
+                Error::MissingCaptures(self.missing.iter().cloned().collect()),
+            ),
+            (FillPolicy::Strict, _, false) | (FillPolicy::NoExtra, _, false) => {
+                Err(Error::ExtraCaptures(self.extra.iter().cloned().collect()))
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -187,7 +238,12 @@ impl<C: Context + Listable> DynamicContext for PolicyContext<C> {
             self.provided.insert(v.clone());
             self.extra.insert(v);
         }
-        trace!("on_expansion_start: provided: {:?} extra: {:?} missing {:?}", self.provided, self.extra, self.missing);
+        trace!(
+            "on_expansion_start: provided: {:?} extra: {:?} missing {:?}",
+            self.provided,
+            self.extra,
+            self.missing
+        );
     }
 
     fn visit_dynamic<V: Visitor>(&mut self, visitor: V) -> V::Result {
@@ -197,11 +253,15 @@ impl<C: Context + Listable> DynamicContext for PolicyContext<C> {
         if !self.provided.contains(k) {
             self.missing.insert(k.to_string());
         }
-        trace!("URI template fill: provided: {:?} extra: {:?} missing {:?}", self.provided, self.extra, self.missing);
+        trace!(
+            "URI template fill: provided: {:?} extra: {:?} missing {:?}",
+            self.provided,
+            self.extra,
+            self.missing
+        );
         self.inner.visit(visitor)
     }
 }
-
 
 // We have a RwLock here because we would like to be able to cache rendering in the InnerSingle To
 // do that, we'd need to be able to accept a &mut self, or else replace the innersingle with a
@@ -226,7 +286,10 @@ impl Entry {
         inner.fill_uritemplate(FillPolicy::NoMissing, vars)
     }
 
-    pub fn partial_fill(&self, vars: impl IntoIterator<Item = (String, String)> + Clone) -> Result<UriTemplateString, Error> {
+    pub fn partial_fill(
+        &self,
+        vars: impl IntoIterator<Item = (String, String)> + Clone,
+    ) -> Result<UriTemplateString, Error> {
         let inner = self.inner.read().expect("not poisoned");
         inner.partial_fill(VarsList(vars))
     }
@@ -241,15 +304,22 @@ impl Entry {
         inner.hydra_type()
     }
 
+    /*
     pub fn extract<T: DeserializeOwned>(&self, url: &str) -> Result<T, Error> {
         let inner = self.inner.read().expect("not poisoned");
         inner.extract(url)
     }
+    */
+
+    pub fn from_uri<T: DeserializeOwned>(&self, url: Uri) -> Result<T, Error> {
+        let inner = self.inner.read().expect("not poisoned");
+        inner.from_uri(url)
+    }
 
     pub fn prefixed(&self, prefix: &str) -> Entry {
         let mut inner = self.inner.write().expect("not poisoned");
-        Entry{
-            inner: Arc::new(RwLock::new(inner.prefixed(prefix)))
+        Entry {
+            inner: Arc::new(RwLock::new(inner.prefixed(prefix))),
         }
     }
 }
@@ -257,15 +327,17 @@ impl Entry {
 #[derive(Default, Clone)]
 struct InnerSingle {
     parsed: Parsed,
-    prefixes: HashMap<String, InnerSingle>
+    prefixes: HashMap<Arc<str>, InnerSingle>,
+    regex: OnceLock<Result<Regex, regex::Error>>,
 }
-
 
 impl InnerSingle {
     fn expressions(&self) -> Vec<Part> {
-        self.parsed.parts_iter().filter(|part|
-            !matches!(part, Part::Lit(_))
-        ).cloned().collect()
+        self.parsed
+            .parts_iter()
+            .filter(|part| !matches!(part, Part::Lit(_)))
+            .cloned()
+            .collect()
     }
 
     fn hydra_type(&self) -> String {
@@ -277,57 +349,83 @@ impl InnerSingle {
     }
 
     fn prefixed(&mut self, prefix: &str) -> Self {
-        let prefix_owned = prefix.to_owned();
+        let prefix_owned = prefix.into();
         if self.prefixes.contains_key(&prefix_owned) {
-            self.prefixes.get(&prefix_owned)
+            self.prefixes
+                .get(&prefix_owned)
                 .expect("couldn't get value for contained key")
                 .clone()
         } else {
-            let mut prefixed = InnerSingle{
-                ..self.clone()
-            };
+            let mut prefixed = InnerSingle { ..self.clone() };
             prefixed.parsed.path.insert(0, Part::Lit(prefix.to_owned()));
-            self.prefixes.insert(prefix_owned.to_string(), prefixed.clone());
+            self.prefixes.insert(prefix_owned, prefixed.clone());
             prefixed
         }
     }
 
     fn re_str(&self) -> String {
-        let mut re = self.parsed.auth.iter().flatten().map(auth_re_string)
+        let re = self
+            .parsed
+            .auth
+            .iter()
+            .flatten()
+            .map(auth_re_string)
             .chain(self.parsed.path.iter().map(path_re_string))
-            .collect::<Vec<_>>().join("");
-        re.push_str("[?#]?.*");
+            .collect::<Vec<_>>()
+            .join("");
         re
     }
 
     fn re_names(&self) -> Vec<String> {
-        self.parsed.nonquery_parts_iter().flat_map(re_names).collect::<Vec<_>>()
+        self.parsed
+            .nonquery_parts_iter()
+            .flat_map(re_names)
+            .collect::<Vec<_>>()
     }
 
     // definitely consider caching this result
-    fn regex(&self) -> Result<Regex, regex::Error> {
-        Regex::new(&self.re_str())
+    fn regex(&self) -> Result<&Regex, regex::Error> {
+        self.regex
+            .get_or_init(|| Regex::new(&self.re_str()))
+            .as_ref()
+            .map_err(|e| e.clone())
     }
 
+    /*
     fn extract<T: DeserializeOwned>(&self, url: &str) -> Result<T, Error> {
-        let caps = self.regex()?.captures(url)
+        let caps = self
+            .regex()?
+            .captures(url)
             .ok_or_else(|| Error::NoMatch(self.re_str(), url.to_string()))?;
         let names = self.re_names();
-        let captures = names.into_iter()
-            .filter_map(|name|
-                caps.name(&name)
-                    .and_then(move |m| percent_decode(m.as_str())
-                        .map(move |value| (Arc::from(name.as_str()), value)
-                    )
-                )
-        ).collect::<Vec<_>>();
+        let captures = names
+            .into_iter()
+            .filter_map(|name| {
+                caps.name(&name).and_then(move |m| {
+                    percent_decode(m.as_str()).map(move |value| (Arc::from(name.as_str()), value))
+                })
+            })
+            .collect::<Vec<_>>();
 
-        T::deserialize(de::CapturesDeserializer::new(&captures))
-            .map_err(Error::from)
+        T::deserialize(de::UriDeserializer::new(&captures, None)).map_err(Error::from)
+    }
+    */
+
+    fn from_uri<T: DeserializeOwned>(&self, uri: Uri) -> Result<T, Error> {
+        let parsed = &self.parsed;
+        let regex = self.regex()?;
+
+        let de = de::UriDeserializer::for_uri(uri, parsed, regex)?;
+
+        T::deserialize(de).map_err(Error::from)
     }
 
     fn template_string(&self) -> String {
-        self.parsed.parts_iter().map(original_string).collect::<Vec<_>>().join("")
+        self.parsed
+            .parts_iter()
+            .map(original_string)
+            .collect::<Vec<_>>()
+            .join("")
     }
 
     fn template(&self) -> Result<UriTemplateString, Error> {
@@ -336,23 +434,50 @@ impl InnerSingle {
         Ok(t.into())
     }
 
-    fn fill_uritemplate(&self, policy: FillPolicy, vars: impl Context + Listable) -> Result<IriReferenceString, Error> {
+    fn fill_uritemplate(
+        &self,
+        policy: FillPolicy,
+        vars: impl Context + Listable,
+    ) -> Result<IriReferenceString, Error> {
         let mut pol = PolicyContext::new(vars);
 
         let templ = &self.template()?;
-        let expanded = templ.expand_dynamic_to_string::<IriSpec,_>(&mut pol)?;
+        let expanded = templ.expand_dynamic_to_string::<IriSpec, _>(&mut pol)?;
         debug!("expanded {}", expanded);
         pol.check(policy)?;
         debug!("checked {:?}", expanded);
-        Ok(expanded.try_into().inspect_err(|e| debug!("try_into: {e:?}"))?)
+        Ok(expanded
+            .try_into()
+            .inspect_err(|e| debug!("try_into: {e:?}"))?)
     }
 
     // XXX stub impl
-    fn partial_fill(&self, vars: impl Context + Listable + Clone) -> Result<UriTemplateString, Error> {
-        let filled_string = self.parsed.auth.clone().map_or(Ok(vec![]), |a| fill_parts(&a, &vars))?.iter().map(original_string)
-            .chain(fill_parts(&self.parsed.path, &vars)?.iter().map(original_string))
-            .chain(self.parsed.query.clone().map_or(Ok(vec![]), |q| fill_parts(&q, &vars))?.iter().map(original_string))
-            .collect::<Vec<_>>().join("");
+    fn partial_fill(
+        &self,
+        vars: impl Context + Listable + Clone,
+    ) -> Result<UriTemplateString, Error> {
+        let filled_string = self
+            .parsed
+            .auth
+            .clone()
+            .map_or(Ok(vec![]), |a| fill_parts(&a, &vars))?
+            .iter()
+            .map(original_string)
+            .chain(
+                fill_parts(&self.parsed.path, &vars)?
+                    .iter()
+                    .map(original_string),
+            )
+            .chain(
+                self.parsed
+                    .query
+                    .clone()
+                    .map_or(Ok(vec![]), |q| fill_parts(&q, &vars))?
+                    .iter()
+                    .map(original_string),
+            )
+            .collect::<Vec<_>>()
+            .join("");
 
         let t = UriTemplateStr::new(&filled_string)?;
         Ok(t.into())
@@ -361,24 +486,26 @@ impl InnerSingle {
     fn axum_route(&self) -> String {
         let mut out = "".to_string();
 
-        for part in &self.parsed.path { match part {
-            Part::Lit(l) => out.push_str(l),
-            Part::Expression(exp) |
-            Part::SegVar(exp) |
-            Part::SegPathVar(exp) => out.push_str(&axum7_vars(&exp.varspecs)),
-            Part::SegRest(exp) |
-            Part::SegPathRest(exp) => out.push_str(&axum7_rest(&exp.varspecs))
-        }}
+        for part in &self.parsed.path {
+            match part {
+                Part::Lit(l) => out.push_str(l),
+                Part::Expression(exp) | Part::SegVar(exp) | Part::SegPathVar(exp) => {
+                    out.push_str(&axum7_vars(&exp.varspecs))
+                }
+                Part::SegRest(exp) | Part::SegPathRest(exp) => {
+                    out.push_str(&axum7_rest(&exp.varspecs))
+                }
+            }
+        }
 
         out
     }
 }
 
-
 fn percent_decode<S: AsRef<str>>(s: S) -> Option<Arc<str>> {
     percent_encoding::percent_decode(s.as_ref().as_bytes())
         .decode_utf8()
-        .ok()  //consider: Result?
+        .ok() //consider: Result?
         .map(|decoded| decoded.as_ref().into())
 }
 
@@ -389,7 +516,7 @@ mod test {
     use super::*;
 
     fn quick_route(input: &str) -> InnerSingle {
-        InnerSingle{
+        InnerSingle {
             parsed: parser::parse(input).unwrap(),
             ..Default::default()
         }
@@ -401,10 +528,7 @@ mod test {
 
         let route = quick_route(input);
 
-        assert_eq!(
-            route.template_string(),
-            input.to_string()
-        )
+        assert_eq!(route.template_string(), input.to_string())
     }
 
     #[test]
@@ -413,8 +537,7 @@ mod test {
         let prefixed = route.prefixed("/api");
         assert_eq!(
             prefixed.template_string(),
-             "http://example.com/api/user/{user_id}{?something,mysterious}".to_string()
-            //                  ^^^^
+            "http://example.com/api/user/{user_id}{?something,mysterious}".to_string() //                  ^^^^
         )
     }
 
@@ -431,7 +554,7 @@ mod test {
         assert_eq!(
             tmpl.to_string(),
             "http://example.com/S/M/user{/user_id}".to_string()
-    )
+        )
     }
 
     #[test]
@@ -440,19 +563,23 @@ mod test {
         assert_eq!(rc.axum_route(), "/api/event/:event_id".to_string());
     }
     /*
-    * Considerations for regexp:
-    * if lits include //, we can sensibly match variables in auth part;
-    * otherwise, we have to match '[^/]* //[^/]*' for the authority
-    */
+     * Considerations for regexp:
+     * if lits include //, we can sensibly match variables in auth part;
+     * otherwise, we have to match '[^/]* //[^/]*' for the authority
+     */
     #[test]
     fn regex() {
-        let route = quick_route("http://{domain}/user/{user_id}/file{/file_id}?something={good}{&mysterious}");
+        let route = quick_route(
+            "http://{domain}/user/{user_id}/file{/file_id}?something={good}{&mysterious}",
+        );
         assert_eq!(
             route.re_str(),
             "http://(?<domain>[^/,]*)/user/(?<user_id>[^/?#,]*)/file/(?<file_id>[^/?#/]*)[?#]?.*"
         );
     }
 
+    /*
+    * XXX removed .extract
     #[test]
     fn extraction() {
         let route = quick_route("http://{domain}/user/{user_id}/file{/file_id}?something={good}{&mysterious}");
@@ -472,4 +599,5 @@ mod test {
             Err(Error::NoMatch(_,_))
         ));
     }
+    */
 }

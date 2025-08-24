@@ -48,7 +48,7 @@ impl Op {
         }
     }
 
-    fn separator(&self) -> &'static str {
+    pub(super) fn separator(&self) -> &'static str {
         use Op::*;
         match self {
             Simple => COMMA,
@@ -69,7 +69,7 @@ impl Op {
     * If there's a "=" joiner "foo=bar"
     */
 
-    fn joiner(&self) -> &'static str {
+    pub(super) fn joiner(&self) -> &'static str {
         use Op::*;
         match self {
             Simple => EMPTY,
@@ -130,13 +130,15 @@ fn exp_re(exp: &Expression, here: &'static str, nxt: &'static str) -> String {
 
 fn exp_re_names(exp: &Expression) -> Vec<String> {
     exp.varspecs.iter()
-        .map(|varspec| {
-            let var = &varspec.varname;
-            match varspec.modifier {
-                VarMod::Prefix(count) => format!("{var}_p{count}"),
-                _ => var.clone()
-            }
-        }).collect()
+        .map(var_re_name).collect()
+}
+
+pub(crate) fn var_re_name(varspec: &VarSpec) -> String {
+    let var = &varspec.varname;
+    match varspec.modifier {
+        VarMod::Prefix(count) => format!("{var}_p{count}"),
+        _ => var.clone()
+    }
 }
 
 fn var_re(op: Op, here: &'static str, nxt: &'static str) -> impl Fn(&VarSpec) -> String {

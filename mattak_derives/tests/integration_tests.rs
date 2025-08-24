@@ -1,15 +1,17 @@
 use iri_string::{spec::IriSpec, template::UriTemplateStr};
 use mattak_derives::{Listable,Context,RouteTemplate,Route};
 
+use ::mattak::routing::Route;
+
 #[allow(dead_code)] // I just want to check that it lists the field names
-#[derive(Default, Listable)]
+#[derive(Default, Listable, PartialEq, Eq, Hash)]
 struct AListable {
     event_id: u16,
     user_id: String
 }
 
 #[allow(dead_code)] // I just want to check that it lists the field names
-#[derive(Clone, RouteTemplate, Default)]
+#[derive(Clone, RouteTemplate, Default, PartialEq, Eq, Hash)]
 #[template("/event_games/{event_id}/user/{user_id}")]
 struct ARouteTemplate { }
 
@@ -22,7 +24,7 @@ struct AContext {
 #[derive(Context)]
 struct EmptyContext {}
 
-#[derive(Route, Clone)]
+#[derive(Route, Clone, PartialEq, Eq, Hash)]
 #[template("/event_games/{event_id}/user/{user_id}")]
 struct ARoute {
     event_id: u16,
@@ -38,7 +40,7 @@ fn smoke_route() {
         event_id: 17,
         user_id: "mikey".to_string(),
     };
-    assert_eq!(route.route_template(), "/event_games/{event_id}/user/{user_id}");
+    assert_eq!(ARoute::route_template().route_template(), "/event_games/{event_id}/user/{user_id}");
     assert_eq!(route.list_vars(), vec!["event_id".to_string(), "user_id".to_string()]);
 }
 #[test]
