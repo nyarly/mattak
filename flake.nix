@@ -44,11 +44,11 @@
             [
               # (rust-bin.selectLatestNightlyWith ( toolchain: toolchain.default))
               # .override { extensions = [ "rust-analyzer" ]; }
-              rust-bin.stable.latest.default
+              (rust-bin.stable.latest.default.override { extensions = [ "rust-analyzer" ]; })
               #cargo
               #cargo-expand
               #rustc
-              rust-analyzer
+              # rust-analyzer
               #clippy
 
               postgresql

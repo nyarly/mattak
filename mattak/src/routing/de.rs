@@ -6,10 +6,9 @@ use serde::{
 };
 use std::{
     any::type_name,
-    collections::{hash_map, HashMap, HashSet},
+    collections::{hash_map, HashMap, HashSet, VecDeque},
     fmt,
     rc::Rc,
-    sync::Arc,
 };
 
 use crate::{
@@ -247,11 +246,23 @@ impl UriDeserializer {
     }
 }
 
+#[derive(Clone)]
 enum VarBinding {
     Scalar(Rc<str>),
     PathExplode(Rc<str>, Rc<str>), // sep, string value
     QueryExplode(Vec<Rc<str>>),
     Empty,
+}
+
+impl VarBinding {
+    fn to_str(&self) -> Result<Rc<str>, UriDeserializationError> {
+        match self {
+            VarBinding::Scalar(v) => Ok(v.clone()),
+            VarBinding::PathExplode(_, joined) => Ok(joined.clone()),
+            VarBinding::QueryExplode(items) => Ok(items.join(",").into()),
+            VarBinding::Empty => Err(UriDeserializationError::wrong_number_of_parameters(0, 1)),
+        }
+    }
 }
 
 fn parsed_template_vars(parsed: &Parsed) -> Vec<Rc<str>> {
@@ -695,13 +706,14 @@ impl<'de> Deserializer<'de> for UriDeserializer {
     where
         V: Visitor<'de>,
     {
-        if self.varlist.len() != 1 {
+        if let [(_, binding)] = self.varlist.as_slice() {
+            visitor.visit_str(&binding.to_str()?)
+        } else {
             return Err(UriDeserializationError::wrong_number_of_parameters(
                 self.varlist.len(),
                 1,
             ));
         }
-        match self.varlist[0] {}
         //visitor.visit_borrowed_str(&self.url_params[0].1)
     }
 
@@ -738,24 +750,23 @@ impl<'de> Deserializer<'de> for UriDeserializer {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_seq(SeqDeserializer {
-            params: self.url_params,
-            idx: 0,
-        })
+        let params = self.varlist.into();
+        visitor.visit_seq(SeqDeserializer { params, idx: 0 })
     }
 
     fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        if self.url_params.len() < len {
+        if self.varlist.len() < len {
             return Err(UriDeserializationError::wrong_number_of_parameters(
-                self.url_params.len(),
+                self.varlist.len(),
                 len,
             ));
         }
+        let params = self.varlist.into();
         visitor.visit_seq(SeqDeserializer {
-            params: self.url_params,
+            params: params,
             idx: 0,
         })
     }
@@ -769,16 +780,14 @@ impl<'de> Deserializer<'de> for UriDeserializer {
     where
         V: Visitor<'de>,
     {
-        if self.url_params.len() < len {
+        if self.varlist.len() < len {
             return Err(UriDeserializationError::wrong_number_of_parameters(
-                self.url_params.len(),
+                self.varlist.len(),
                 len,
             ));
         }
-        visitor.visit_seq(SeqDeserializer {
-            params: self.url_params,
-            idx: 0,
-        })
+        let params = self.varlist.into();
+        visitor.visit_seq(SeqDeserializer { params, idx: 0 })
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -786,7 +795,7 @@ impl<'de> Deserializer<'de> for UriDeserializer {
         V: Visitor<'de>,
     {
         visitor.visit_map(MapDeserializer {
-            params: self.url_params,
+            params: self.varlist.into(),
             value: None,
             key: None,
         })
@@ -813,37 +822,36 @@ impl<'de> Deserializer<'de> for UriDeserializer {
     where
         V: Visitor<'de>,
     {
-        if self.url_params.len() != 1 {
+        if self.varlist.len() != 1 {
             return Err(UriDeserializationError::wrong_number_of_parameters(
-                self.url_params.len(),
+                self.varlist.len(),
                 1,
             ));
         }
 
         visitor.visit_enum(EnumDeserializer {
-            value: &self.url_params[0].1,
+            value: self.varlist[0].0.clone(),
         })
     }
 }
 
-struct MapDeserializer<'de> {
-    params: &'de [(Arc<str>, Arc<str>)],
-    key: Option<KeyOrIdx<'de>>,
-    value: Option<&'de Arc<str>>,
+struct MapDeserializer {
+    params: VecDeque<(Rc<str>, VarBinding)>,
+    key: Option<KeyOrIdx>,
+    value: Option<Rc<str>>,
 }
 
-impl<'de> MapAccess<'de> for MapDeserializer<'de> {
+impl<'de> MapAccess<'de> for MapDeserializer {
     type Error = UriDeserializationError;
 
     fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Self::Error>
     where
         K: DeserializeSeed<'de>,
     {
-        match self.params.split_first() {
-            Some(((key, value), tail)) => {
-                self.value = Some(value);
-                self.params = tail;
-                self.key = Some(KeyOrIdx::Key(key));
+        match self.params.pop_front() {
+            Some((key, value)) => {
+                self.key = Some(KeyOrIdx::Key(key.clone()));
+                self.value = Some(value.to_str()?);
                 seed.deserialize(KeyDeserializer { key }).map(Some)
             }
             None => Ok(None),
@@ -864,8 +872,8 @@ impl<'de> MapAccess<'de> for MapDeserializer<'de> {
     }
 }
 
-struct KeyDeserializer<'de> {
-    key: &'de str,
+struct KeyDeserializer {
+    key: Rc<str>,
 }
 
 macro_rules! parse_key {
@@ -879,7 +887,7 @@ macro_rules! parse_key {
     };
 }
 
-impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
+impl<'de> Deserializer<'de> for KeyDeserializer {
     type Error = UriDeserializationError;
 
     parse_key!(deserialize_identifier);
@@ -910,7 +918,7 @@ macro_rules! parse_value {
                 if let Some(key) = self.key.take() {
                     let kind = match key {
                         KeyOrIdx::Key(key) => ErrorKind::ParseErrorAtKey {
-                            key: key.to_owned(),
+                            key: key.to_string(),
                             value: self.value.to_string(),
                             expected_type: $ty,
                         },
@@ -934,12 +942,12 @@ macro_rules! parse_value {
 }
 
 #[derive(Debug)]
-struct ValueDeserializer<'de> {
-    key: Option<KeyOrIdx<'de>>,
-    value: &'de Arc<str>,
+struct ValueDeserializer {
+    key: Option<KeyOrIdx>,
+    value: Rc<str>,
 }
 
-impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
+impl<'de> Deserializer<'de> for ValueDeserializer {
     type Error = UriDeserializationError;
 
     unsupported_type!(deserialize_map);
@@ -973,14 +981,14 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_borrowed_str(self.value)
+        visitor.visit_str(&self.value)
     }
 
     fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_borrowed_bytes(self.value.as_bytes())
+        visitor.visit_bytes(self.value.as_bytes())
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -1023,12 +1031,12 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        struct PairDeserializer<'de> {
-            key: Option<KeyOrIdx<'de>>,
-            value: Option<&'de Arc<str>>,
+        struct PairDeserializer {
+            key: Option<KeyOrIdx>,
+            value: Option<Rc<str>>,
         }
 
-        impl<'de> SeqAccess<'de> for PairDeserializer<'de> {
+        impl<'de> SeqAccess<'de> for PairDeserializer {
             type Error = UriDeserializationError;
 
             fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
@@ -1126,11 +1134,11 @@ impl<'de> Deserializer<'de> for ValueDeserializer<'de> {
     }
 }
 
-struct EnumDeserializer<'de> {
-    value: &'de str,
+struct EnumDeserializer {
+    value: Rc<str>,
 }
 
-impl<'de> EnumAccess<'de> for EnumDeserializer<'de> {
+impl<'de> EnumAccess<'de> for EnumDeserializer {
     type Error = UriDeserializationError;
     type Variant = UnitVariant;
 
@@ -1186,26 +1194,25 @@ impl<'de> VariantAccess<'de> for UnitVariant {
     }
 }
 
-struct SeqDeserializer<'de> {
-    params: &'de [(Arc<str>, Arc<str>)],
+struct SeqDeserializer {
+    params: VecDeque<(Rc<str>, VarBinding)>,
     idx: usize,
 }
 
-impl<'de> SeqAccess<'de> for SeqDeserializer<'de> {
+impl<'de> SeqAccess<'de> for SeqDeserializer {
     type Error = UriDeserializationError;
 
     fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where
         T: DeserializeSeed<'de>,
     {
-        match self.params.split_first() {
-            Some(((key, value), tail)) => {
-                self.params = tail;
+        match self.params.pop_front() {
+            Some((key, value)) => {
                 let idx = self.idx;
                 self.idx += 1;
                 Ok(Some(seed.deserialize(ValueDeserializer {
                     key: Some(KeyOrIdx::Idx { idx, key }),
-                    value,
+                    value: value.to_str()?,
                 })?))
             }
             None => Ok(None),
@@ -1214,9 +1221,9 @@ impl<'de> SeqAccess<'de> for SeqDeserializer<'de> {
 }
 
 #[derive(Debug, Clone)]
-enum KeyOrIdx<'de> {
-    Key(&'de str),
-    Idx { idx: usize, key: &'de str },
+enum KeyOrIdx {
+    Key(Rc<str>),
+    Idx { idx: usize, key: Rc<str> },
 }
 
 #[cfg(test)]
@@ -1240,7 +1247,7 @@ mod tests {
         a: i32,
     }
 
-    fn create_url_params<I, K, V>(values: I) -> Vec<(Arc<str>, Arc<str>)>
+    fn create_url_params<I, K, V>(values: I) -> Vec<(Rc<str>, VarBinding)>
     where
         I: IntoIterator<Item = (K, V)>,
         K: AsRef<str>,
@@ -1248,7 +1255,12 @@ mod tests {
     {
         values
             .into_iter()
-            .map(|(k, v)| (Arc::from(k.as_ref()), Arc::from(v.as_ref())))
+            .map(|(k, v)| {
+                (
+                    Rc::from(k.as_ref()),
+                    VarBinding::Scalar(Rc::from(v.as_ref())),
+                )
+            })
             .collect()
     }
 
@@ -1257,7 +1269,7 @@ mod tests {
             #[allow(clippy::bool_assert_comparison)]
             {
                 let url_params = create_url_params(vec![("value", $value_str)]);
-                let deserializer = UriDeserializer::new(&url_params, None);
+                let deserializer = UriDeserializer::new(url_params, HashMap::new());
                 assert_eq!(<$ty>::deserialize(deserializer).unwrap(), $value);
             }
         };
@@ -1287,12 +1299,12 @@ mod tests {
 
         let url_params = create_url_params(vec![("a", "B")]);
         assert_eq!(
-            MyEnum::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            MyEnum::deserialize(UriDeserializer::new(url_params, HashMap::new())).unwrap(),
             MyEnum::B
         );
 
         let url_params = create_url_params(vec![("a", "1"), ("b", "2")]);
-        let error_kind = i32::deserialize(UriDeserializer::new(&url_params, None))
+        let error_kind = i32::deserialize(UriDeserializer::new(url_params, HashMap::new()))
             .unwrap_err()
             .kind;
         assert!(matches!(
@@ -1308,26 +1320,30 @@ mod tests {
     fn test_parse_seq() {
         let url_params = create_url_params(vec![("a", "1"), ("b", "true"), ("c", "abc")]);
         assert_eq!(
-            <(i32, bool, String)>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            <(i32, bool, String)>::deserialize(UriDeserializer::new(
+                url_params.clone(),
+                HashMap::new()
+            ))
+            .unwrap(),
             (1, true, "abc".to_owned())
         );
 
         #[derive(Debug, Deserialize, Eq, PartialEq)]
         struct TupleStruct(i32, bool, String);
         assert_eq!(
-            TupleStruct::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            TupleStruct::deserialize(UriDeserializer::new(url_params, HashMap::new())).unwrap(),
             TupleStruct(1, true, "abc".to_owned())
         );
 
         let url_params = create_url_params(vec![("a", "1"), ("b", "2"), ("c", "3")]);
         assert_eq!(
-            <Vec<i32>>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            <Vec<i32>>::deserialize(UriDeserializer::new(url_params, HashMap::new())).unwrap(),
             vec![1, 2, 3]
         );
 
         let url_params = create_url_params(vec![("a", "c"), ("a", "B")]);
         assert_eq!(
-            <Vec<MyEnum>>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            <Vec<MyEnum>>::deserialize(UriDeserializer::new(url_params, HashMap::new())).unwrap(),
             vec![MyEnum::C, MyEnum::B]
         );
     }
@@ -1336,7 +1352,8 @@ mod tests {
     fn test_parse_seq_tuple_string_string() {
         let url_params = create_url_params(vec![("a", "foo"), ("b", "bar")]);
         assert_eq!(
-            <Vec<(String, String)>>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            <Vec<(String, String)>>::deserialize(UriDeserializer::new(url_params, HashMap::new()))
+                .unwrap(),
             vec![
                 ("a".to_owned(), "foo".to_owned()),
                 ("b".to_owned(), "bar".to_owned())
@@ -1348,7 +1365,8 @@ mod tests {
     fn test_parse_seq_tuple_string_parse() {
         let url_params = create_url_params(vec![("a", "1"), ("b", "2")]);
         assert_eq!(
-            <Vec<(String, u32)>>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            <Vec<(String, u32)>>::deserialize(UriDeserializer::new(url_params, HashMap::new()))
+                .unwrap(),
             vec![("a".to_owned(), 1), ("b".to_owned(), 2)]
         );
     }
@@ -1357,7 +1375,7 @@ mod tests {
     fn test_parse_struct() {
         let url_params = create_url_params(vec![("a", "1"), ("b", "true"), ("c", "abc")]);
         assert_eq!(
-            Struct::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            Struct::deserialize(UriDeserializer::new(url_params, HashMap::new())).unwrap(),
             Struct {
                 c: "abc".to_owned(),
                 b: true,
@@ -1375,7 +1393,7 @@ mod tests {
             ("d", "false"),
         ]);
         assert_eq!(
-            Struct::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            Struct::deserialize(UriDeserializer::new(url_params, HashMap::new())).unwrap(),
             Struct {
                 c: "abc".to_owned(),
                 b: true,
@@ -1393,7 +1411,8 @@ mod tests {
             ("d", "false"),
         ]);
         assert_eq!(
-            <(&str, bool, u32)>::deserialize(UriDeserializer::new(&url_params, None)).unwrap(),
+            <(&str, bool, u32)>::deserialize(UriDeserializer::new(url_params, HashMap::new()))
+                .unwrap(),
             ("abc", true, 1)
         );
     }
@@ -1402,8 +1421,11 @@ mod tests {
     fn test_parse_map() {
         let url_params = create_url_params(vec![("a", "1"), ("b", "true"), ("c", "abc")]);
         assert_eq!(
-            <HashMap<String, String>>::deserialize(UriDeserializer::new(&url_params, None))
-                .unwrap(),
+            <HashMap<String, String>>::deserialize(UriDeserializer::new(
+                url_params,
+                HashMap::new()
+            ))
+            .unwrap(),
             [("a", "1"), ("b", "true"), ("c", "abc")]
                 .iter()
                 .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
@@ -1418,9 +1440,10 @@ mod tests {
             $expected_error_kind:expr $(,)?
         ) => {
             let url_params = create_url_params($params);
-            let actual_error_kind = <$ty>::deserialize(UriDeserializer::new(&url_params, None))
-                .unwrap_err()
-                .kind;
+            let actual_error_kind =
+                <$ty>::deserialize(UriDeserializer::new(url_params, HashMap::new()))
+                    .unwrap_err()
+                    .kind;
             assert_eq!(actual_error_kind, $expected_error_kind);
         };
     }
