@@ -1,20 +1,26 @@
 use std::collections::HashSet;
 
-use iri_string::{spec::UriSpec, template::{Context, UriTemplateStr}};
+use iri_string::{
+    spec::UriSpec,
+    template::{Context, UriTemplateStr},
+};
 
 use crate::Error;
 
-use super::{parser::{Expression, Op, Part, VarMod, VarSpec}, Listable};
+use super::{
+    parser::{Expression, Op, Part, VarMod, VarSpec},
+    Listable,
+};
 
-const EMPTY: &str      = "";
-const PLUS: &str       = "+";
-const EQUALS: &str     = "=";
-const COMMA: &str      = ",";
-const DOT: &str        = ".";
-const SEMI: &str       = ";";
-const AND: &str        = "&";
-const QMARK: &str      = "?";
-const SLASH: &str      = "/";
+const EMPTY: &str = "";
+const PLUS: &str = "+";
+const EQUALS: &str = "=";
+const COMMA: &str = ",";
+const DOT: &str = ".";
+const SEMI: &str = ";";
+const AND: &str = "&";
+const QMARK: &str = "?";
+const SLASH: &str = "/";
 const OCTOTHORPE: &str = "#";
 
 static QUERYTERM: &str = "?#";
@@ -63,11 +69,11 @@ impl Op {
     }
 
     /*
-    * Types with non-empty Joiner incorporate the variable name
-    * i.e. for foo=bar
-    * If there's a [] joiner: "bar"
-    * If there's a "=" joiner "foo=bar"
-    */
+     * Types with non-empty Joiner incorporate the variable name
+     * i.e. for foo=bar
+     * If there's a [] joiner: "bar"
+     * If there's a "=" joiner "foo=bar"
+     */
 
     pub(super) fn joiner(&self) -> &'static str {
         use Op::*;
@@ -84,60 +90,44 @@ impl Op {
     }
 }
 
-pub(super) fn re_names(part: &Part) -> Vec<String> {
-    match part {
-        Part::Lit(_) => vec![],
-        Part::Expression(exp) |
-        Part::SegPathVar(exp) |
-        Part::SegPathRest(exp) |
-        Part::SegVar(exp) |
-        Part::SegRest(exp) => exp_re_names(exp)
-    }
-}
-
 pub(super) fn auth_re_string(part: &Part) -> String {
     match part {
         Part::Lit(s) => s.clone(),
-        Part::Expression(exp) |
-        Part::SegPathVar(exp) |
-        Part::SegPathRest(exp) |
-        Part::SegVar(exp) |
-        Part::SegRest(exp) => exp_re(exp, EMPTY, SLASH)
+        Part::Expression(exp)
+        | Part::SegPathVar(exp)
+        | Part::SegPathRest(exp)
+        | Part::SegVar(exp)
+        | Part::SegRest(exp) => exp_re(exp, EMPTY, SLASH),
     }
 }
 
 pub(super) fn path_re_string(part: &Part) -> String {
     match part {
         Part::Lit(s) => s.clone(),
-        Part::Expression(exp) |
-        Part::SegPathVar(exp) |
-        Part::SegPathRest(exp) => exp_re(exp, SLASH, QUERYTERM),
-        Part::SegVar(exp) |
-        Part::SegRest(exp) => format!("/{}", exp_re(exp, SLASH, QUERYTERM))
+        Part::Expression(exp) | Part::SegPathVar(exp) | Part::SegPathRest(exp) => {
+            exp_re(exp, SLASH, QUERYTERM)
+        }
+        Part::SegVar(exp) | Part::SegRest(exp) => format!("/{}", exp_re(exp, SLASH, QUERYTERM)),
     }
 }
-
 
 fn exp_re(exp: &Expression, here: &'static str, nxt: &'static str) -> String {
     let mut re = exp.operator.prefix().to_string();
     re.push_str(
-        &exp.varspecs.iter()
+        &exp.varspecs
+            .iter()
             .map(var_re(exp.operator, here, nxt))
             .collect::<Vec<_>>()
-            .join(exp.operator.separator()));
+            .join(exp.operator.separator()),
+    );
     re
-}
-
-fn exp_re_names(exp: &Expression) -> Vec<String> {
-    exp.varspecs.iter()
-        .map(var_re_name).collect()
 }
 
 pub(crate) fn var_re_name(varspec: &VarSpec) -> String {
     let var = &varspec.varname;
     match varspec.modifier {
         VarMod::Prefix(count) => format!("{var}_p{count}"),
-        _ => var.clone()
+        _ => var.clone(),
     }
 }
 
@@ -169,15 +159,15 @@ fn var_re(op: Op, here: &'static str, nxt: &'static str) -> impl Fn(&VarSpec) ->
 pub(super) fn original_string(part: &Part) -> String {
     match part {
         Part::Lit(s) => s.clone(),
-        Part::Expression(exp) |
-        Part::SegPathVar(exp) |
-        Part::SegPathRest(exp) => exp_string(exp),
-        Part::SegVar(exp) |
-        Part::SegRest(exp) => format!("/{}", exp_string(exp))
+        Part::Expression(exp) | Part::SegPathVar(exp) | Part::SegPathRest(exp) => exp_string(exp),
+        Part::SegVar(exp) | Part::SegRest(exp) => format!("/{}", exp_string(exp)),
     }
 }
 
-pub(super) fn fill_parts(parts: &Vec<Part>, vars: &(impl Context + Listable + Clone)) -> Result<Vec<Part>, Error> {
+pub(super) fn fill_parts(
+    parts: &Vec<Part>,
+    vars: &(impl Context + Listable + Clone),
+) -> Result<Vec<Part>, Error> {
     let mut new_partlist = vec![];
     for part in parts {
         match part {
@@ -192,7 +182,11 @@ pub(super) fn fill_parts(parts: &Vec<Part>, vars: &(impl Context + Listable + Cl
     Ok(new_partlist)
 }
 
-fn fill_part(exp: &Expression, vars: &(impl Context + Listable + Clone), make_part: impl Fn(Expression) -> Part) -> Result<Vec<Part>, Error> {
+fn fill_part(
+    exp: &Expression,
+    vars: &(impl Context + Listable + Clone),
+    make_part: impl Fn(Expression) -> Part,
+) -> Result<Vec<Part>, Error> {
     let mut new_partlist = vec![];
     let mut specs = exp.varspecs.iter().peekable();
     let mut given = HashSet::new();
@@ -204,15 +198,20 @@ fn fill_part(exp: &Expression, vars: &(impl Context + Listable + Clone), make_pa
         let mut litspecs = vec![];
         while let Some(spec) = specs.peek() {
             if given.contains(&spec.varname) {
-                litspecs.push(specs.next().expect("next to be Some if peek was Some").clone())
+                litspecs.push(
+                    specs
+                        .next()
+                        .expect("next to be Some if peek was Some")
+                        .clone(),
+                )
             } else {
-                break
+                break;
             }
         }
         if !litspecs.is_empty() {
-            let newexp = Expression{
+            let newexp = Expression {
                 operator: exp.operator,
-                varspecs: litspecs
+                varspecs: litspecs,
             };
             let tstr = original_string(&make_part(newexp));
             let t = UriTemplateStr::new(&tstr)?;
@@ -222,15 +221,20 @@ fn fill_part(exp: &Expression, vars: &(impl Context + Listable + Clone), make_pa
         let mut openspecs = vec![];
         while let Some(spec) = specs.peek() {
             if !given.contains(&spec.varname) {
-                openspecs.push(specs.next().expect("next to be Some if peek was Some").clone())
+                openspecs.push(
+                    specs
+                        .next()
+                        .expect("next to be Some if peek was Some")
+                        .clone(),
+                )
             } else {
-                break
+                break;
             }
         }
         if !openspecs.is_empty() {
             let newexp = Expression {
                 operator: exp.operator,
-                varspecs: openspecs
+                varspecs: openspecs,
             };
             let new_part = make_part(newexp);
             new_partlist.push(new_part);
@@ -240,9 +244,14 @@ fn fill_part(exp: &Expression, vars: &(impl Context + Listable + Clone), make_pa
 }
 
 fn exp_string(exp: &Expression) -> String {
-    format!("{{{}{}}}",
+    format!(
+        "{{{}{}}}",
         exp.operator.to_string(),
-        exp.varspecs.iter().map(varspec_string).collect::<Vec<_>>().join(",")
+        exp.varspecs
+            .iter()
+            .map(varspec_string)
+            .collect::<Vec<_>>()
+            .join(",")
     )
 }
 
@@ -267,9 +276,23 @@ fn varspec_string(varspec: &VarSpec) -> String {
 * {/foo,bar} => <slash-star> :foobar
 */
 pub(super) fn axum7_vars(vars: &[VarSpec]) -> String {
-    format!("/:{}", vars.iter().cloned().map(|var| var.varname).collect::<Vec<_>>().join(""))
+    format!(
+        "/:{}",
+        vars.iter()
+            .cloned()
+            .map(|var| var.varname)
+            .collect::<Vec<_>>()
+            .join("")
+    )
 }
 
 pub(super) fn axum7_rest(vars: &[VarSpec]) -> String {
-    format!("/*{}", vars.iter().cloned().map(|var| var.varname).collect::<Vec<_>>().join(""))
+    format!(
+        "/*{}",
+        vars.iter()
+            .cloned()
+            .map(|var| var.varname)
+            .collect::<Vec<_>>()
+            .join("")
+    )
 }

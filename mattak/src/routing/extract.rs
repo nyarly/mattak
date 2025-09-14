@@ -24,7 +24,7 @@ impl<R: Route + DeserializeOwned, S: Send + Sync> FromRequestParts<S> for Extrac
 
     #[doc = " Perform the extraction."]
     #[allow(
-        elided_named_lifetimes,
+        mismatched_lifetime_syntaxes,
         clippy::type_complexity,
         clippy::type_repetition_in_bounds
     )]
@@ -47,7 +47,7 @@ impl<R: Route + DeserializeOwned, S: Send + Sync> FromRequestParts<S> for Extrac
     }
 }
 
-async fn extract<R: Route + DeserializeOwned, S: Send + Sync>(
+pub async fn extract<R: Route + DeserializeOwned, S: Send + Sync>(
     parts: &mut Parts,
     state: &S,
 ) -> Result<Extract<R>, Rejection> {
@@ -65,6 +65,7 @@ async fn extract<R: Route + DeserializeOwned, S: Send + Sync>(
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum Rejection {
     #[error("couldn't get nested path {0:?}")]
     NestedPath(#[from] NestedPathRejection),

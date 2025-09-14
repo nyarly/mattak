@@ -19,13 +19,13 @@ use crate::{error::Error, routing::parser::VarMod};
 
 use self::{
     parser::{Parsed, Part},
-    render::{auth_re_string, axum7_rest, axum7_vars, original_string, path_re_string, re_names},
+    render::{auth_re_string, axum7_rest, axum7_vars, original_string, path_re_string},
 };
 
 use typemap_ors::ShareMap;
 
 mod de;
-mod extract;
+pub mod extract;
 mod parser;
 mod render;
 pub use de::UriDeserializationError;
@@ -70,6 +70,10 @@ where
     // Would like this one structs and have it work with Self,
     // and maybe with Enum instances.
     fn route_template(&self) -> String;
+
+    fn assoc_fields(&self) -> Vec<String> {
+        vec![]
+    }
 
     // XXX have to be able to hash the template,
     // _but_ it could hash the String
@@ -123,12 +127,19 @@ fn the_map<RT: RouteTemplate + 'static>() -> Arc<Mutex<Map<RT>>> {
         .clone()
 }
 
+fn parsed<RT: RouteTemplate>(rt: RT) -> Result<Parsed, Error> {
+    let mut parsed =
+        parser::parse(&rt.route_template()).map_err(|e| Error::Parsing(format!("{:?}", e)))?;
+    parsed.annotate_assocs(rt.assoc_fields());
+    Ok(parsed)
+}
+
 impl<RT: RouteTemplate> Map<RT> {
     fn named(&mut self, rt: RT) -> Result<Arc<RwLock<InnerSingle>>, Error> {
         let template = self
             .templates
             .entry(rt.clone())
-            .or_insert(rt.route_template());
+            .or_insert_with(|| format!("{};{:?}", rt.route_template(), rt.assoc_fields()));
         if self.store.contains_key(template) {
             self.store
                 .get(template)
@@ -138,7 +149,7 @@ impl<RT: RouteTemplate> Map<RT> {
                 .cloned()
         } else {
             let route = Arc::new(RwLock::new(InnerSingle {
-                parsed: parser::parse(template).map_err(|e| Error::Parsing(format!("{:?}", e)))?,
+                parsed: parsed(rt)?,
                 ..InnerSingle::default()
             }));
             self.store.insert(template.to_string(), route);
@@ -373,12 +384,14 @@ impl InnerSingle {
         re
     }
 
+    /*
     fn re_names(&self) -> Vec<String> {
         self.parsed
             .nonquery_parts_iter()
             .flat_map(re_names)
             .collect::<Vec<_>>()
     }
+    */
 
     // definitely consider caching this result
     fn regex(&self) -> Result<&Regex, regex::Error> {
@@ -564,7 +577,7 @@ mod test {
         );
         assert_eq!(
             route.re_str(),
-            "http://(?<domain>[^/,]*)/user/(?<user_id>[^/?#,]*)/file/(?<file_id>[^/?#/]*)[?#]?.*"
+            "http://(?<domain>[^/,]*)/user/(?<user_id>[^/?#,]*)/file/(?<file_id>[^/?#/]*)"
         );
     }
 

@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use nom::{
     branch::alt,
     bytes::complete::tag,
@@ -83,7 +85,6 @@ use nom::{
 *
 */
 
-
 /* We're parsing a terrible hybrid of
 * RFC 3986 (just paths)
 * RFC 6570 (URITemplates +)
@@ -145,23 +146,33 @@ pub(super) struct Parsed {
     pub(super) auth: Option<Vec<Part>>,
     pub(super) path: Vec<Part>,
     pub(super) query: Option<Vec<Part>>,
+    pub(super) assocs: Vec<String>,
 }
 
 impl Parsed {
     pub(super) fn parts_iter(&self) -> impl Iterator<Item = &Part> {
-        self.auth.iter().flatten()
+        self.auth
+            .iter()
+            .flatten()
             .chain(self.path.iter())
             .chain(self.query.iter().flatten())
     }
     pub(super) fn nonquery_parts_iter(&self) -> impl Iterator<Item = &Part> {
-        self.auth.iter().flatten()
-            .chain(self.path.iter())
+        self.auth.iter().flatten().chain(self.path.iter())
     }
     pub(super) fn query_parts_iter(&self) -> impl Iterator<Item = &Part> {
         self.query.iter().flatten()
     }
+    pub(super) fn annotate_assocs(&mut self, assocs: impl IntoIterator<Item = String>) {
+        self.assocs = assocs.into_iter().collect();
+    }
+    // XXX Big assumption here that there's either zero or one assoc annotation,
+    // and that the only assoc is {?like_this*}
+    // When we consider support for path assocs, this'll be confusing.
+    pub(super) fn query_assoc_name(&self) -> Option<Rc<str>> {
+        self.assocs.iter().map(|a| a.clone().into()).next()
+    }
 }
-
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) enum Part {
@@ -188,18 +199,17 @@ impl Part {
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct Expression {
     pub(super) operator: Op,
-    pub(super) varspecs: Vec<VarSpec>
+    pub(super) varspecs: Vec<VarSpec>,
 }
 
 impl Expression {
     fn from_pair((optchar, varspecs): (Option<char>, Vec<VarSpec>)) -> Expression {
         Expression {
             operator: Op::from_optchar(optchar),
-            varspecs
+            varspecs,
         }
     }
 }
-
 
 /* per RFC 6570 (for explode...)
 * Types with non-empty Joiner incorporate the variable name
@@ -240,98 +250,102 @@ impl Op {
             Some(';') => PathParam,
             Some('?') => Query,
             Some('&') => QueryCont,
-            _ => panic!("parsed {:?} as expression operator", ch)
+            _ => panic!("parsed {:?} as expression operator", ch),
         }
     }
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub(super) struct VarSpec{
+pub(super) struct VarSpec {
+    // XXX consider -> Rc<str>
     pub(super) varname: String,
-    pub(super) modifier: VarMod
+    pub(super) modifier: VarMod,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum VarMod {
     Prefix(u16),
     Explode,
-    None
+    None,
 }
-
 
 pub(super) fn parse(base: &str) -> Result<Parsed, nom::Err<NomError<'_>>> {
     let (_, (auth, path, query)) = route_template(base)?;
-    Ok(Parsed{auth, path, query})
+    Ok(Parsed {
+        auth,
+        path,
+        query,
+        assocs: vec![],
+    })
 }
 
 // route-template = [authority-part] path [query_part]
 #[allow(clippy::type_complexity)]
-fn route_template(i: &str) -> NomResult<(Option<Vec<Part>>, Vec<Part>, Option<Vec<Part>>)> {
-    all_consuming(tuple((
-        opt(authority_part),
-        path,
-        opt(query_part)
-    )))(i)
+fn route_template(i: &str) -> NomResult<'_, (Option<Vec<Part>>, Vec<Part>, Option<Vec<Part>>)> {
+    all_consuming(tuple((opt(authority_part), path, opt(query_part))))(i)
 }
 //
 //
 // XXX consider adding alternative of auth-lit? (auth-exp auth-lit)?
 // XXX iow: 0 or 1 expressions if there are no //.
 // authority-part = *( authority-literals / expression ) '//' authority
-fn authority_part(i: &str) -> NomResult<Vec<Part>> {
+fn authority_part(i: &str) -> NomResult<'_, Vec<Part>> {
     map(
         separated_pair(
             many0(alt((authority_literals, expression))),
             tag("//"),
-            authority
+            authority,
         ),
         |(mut pre, mut authority)| {
             pre.push(Part::to_lit("//"));
             pre.append(&mut authority);
             pre
-        }
+        },
     )(i)
 }
 
 // path         = 1*segment [tail-segment]
-fn path(i: &str) -> NomResult<Vec<Part>> {
+fn path(i: &str) -> NomResult<'_, Vec<Part>> {
     alt((
         map(
-            pair(many1(segment),opt(tail_segment)),
+            pair(many1(segment), opt(tail_segment)),
             |(mut segs, maybe_tail)| match maybe_tail {
-                Some(seg) => {segs.push(seg); segs}
-                None => segs
-            }
+                Some(seg) => {
+                    segs.push(seg);
+                    segs
+                }
+                None => segs,
+            },
         ),
-        value(vec![Part::to_lit("/")], tag("/"))
+        value(vec![Part::to_lit("/")], tag("/")),
     ))(i)
 }
 
 // query_part =  '?'/'#' *(authority-literals / expression)
-fn query_part(i: &str) -> NomResult<Vec<Part>> {
+fn query_part(i: &str) -> NomResult<'_, Vec<Part>> {
     many1(alt((authority_literals, authority_expression)))(i)
 }
 
 // authority = *(authority-literals / authority-expression )
-fn authority(i: &str) -> NomResult<Vec<Part>> {
+fn authority(i: &str) -> NomResult<'_, Vec<Part>> {
     many0(alt((authority_literals, authority_expression)))(i)
 }
 
 // segment = segment-literal / segment-variable / segment-pathvar
-fn segment(i: &str) -> NomResult<Part> {
+fn segment(i: &str) -> NomResult<'_, Part> {
     alt((segment_variable, segment_pathvar, segment_literal))(i)
 }
 
 // tail-segment = segment-rest / segment-pathrest
-fn tail_segment(i: &str) -> NomResult<Part> {
+fn tail_segment(i: &str) -> NomResult<'_, Part> {
     alt((segment_rest, segment_pathrest))(i)
 }
 
 // segment-literal = "/" *pchar
-fn segment_literal(i: &str) -> NomResult<Part> {
+fn segment_literal(i: &str) -> NomResult<'_, Part> {
     map(
         recognize(preceded(char('/'), many1_count(pchar))), // test "/" path
-        Part::to_lit
+        Part::to_lit,
     )(i)
 }
 
@@ -339,130 +353,162 @@ fn segment_literal(i: &str) -> NomResult<Part> {
 // /  %x5D / %x5F / %x61-7A / %x7E / ucschar / iprivate
 // /  pct-encoded
 // authority-literals = literals - "/"
-fn authority_literals(i: &str) -> NomResult<Part> {
+fn authority_literals(i: &str) -> NomResult<'_, Part> {
     map(
-        recognize(many1_count(
-            alt((satisfy(|ch| matches!(ch,
+        recognize(many1_count(alt((
+            satisfy(|ch| {
+                matches!(ch,
                 '\u{21}' | '\u{23}'..='\u{24}' | '\u{26}' |
                 '\u{28}'..='\u{2e}' | '\u{30}'..='\u{3B}' | // not \u{2f} = '/'
-                '\u{3D}' | '\u{3F}'..='\u{5B}' | '\u{5D}' | '\u{5F}' | '\u{61}'..='\u{7A}' | '\u{7E}')),
-                ucschar, iprivate, pct_encoded))
-        )),
-        Part::to_lit
+                '\u{3D}' | '\u{3F}'..='\u{5B}' | '\u{5D}' | '\u{5F}' | '\u{61}'..='\u{7A}' | '\u{7E}')
+            }),
+            ucschar,
+            iprivate,
+            pct_encoded,
+        )))),
+        Part::to_lit,
     )(i)
 }
 
-
 // segment-variable = "/{" [ "+" ] segment-variable-list "}"
-fn segment_variable(i: &str) -> NomResult<Part> {
-    map( map(
-        delimited(tag("/{"), pair(opt(char('+')), segment_var_list), tag("}")),
-        Expression::from_pair
-    ), Part::SegVar)(i)
+fn segment_variable(i: &str) -> NomResult<'_, Part> {
+    map(
+        map(
+            delimited(tag("/{"), pair(opt(char('+')), segment_var_list), tag("}")),
+            Expression::from_pair,
+        ),
+        Part::SegVar,
+    )(i)
 }
 
 // segment-pathvar = "{/" segment-variable-list "}"
-fn segment_pathvar(i: &str) -> NomResult<Part> {
-    map( map(
-        delimited(tag("{"), pair(opt(char('/')), segment_var_list), tag("}")),
-        Expression::from_pair
-    ), Part::SegPathVar)(i)
+fn segment_pathvar(i: &str) -> NomResult<'_, Part> {
+    map(
+        map(
+            delimited(tag("{"), pair(opt(char('/')), segment_var_list), tag("}")),
+            Expression::from_pair,
+        ),
+        Part::SegPathVar,
+    )(i)
 }
 
 // segment-rest = "/{" [ operator ] variable-list "}"
-fn segment_rest(i: &str) -> NomResult<Part> {
-    map( map(
-        delimited(tag("/{"), pair(opt(tail_operator), variable_list), tag("}")),
-        Expression::from_pair
-    ), Part::SegRest)(i)
+fn segment_rest(i: &str) -> NomResult<'_, Part> {
+    map(
+        map(
+            delimited(tag("/{"), pair(opt(tail_operator), variable_list), tag("}")),
+            Expression::from_pair,
+        ),
+        Part::SegRest,
+    )(i)
 }
 
 // segment-pathrest = "{/" variable-list "}"
-fn segment_pathrest(i: &str) -> NomResult<Part> {
-    map(map(
-        delimited(tag("{"), pair(opt(char('/')), variable_list), tag("}")),
-        Expression::from_pair
-    ), Part::SegPathRest)(i)
+fn segment_pathrest(i: &str) -> NomResult<'_, Part> {
+    map(
+        map(
+            delimited(tag("{"), pair(opt(char('/')), variable_list), tag("}")),
+            Expression::from_pair,
+        ),
+        Part::SegPathRest,
+    )(i)
 }
 
 // segment-var-list =  varspec *( "," varspec )
-fn segment_var_list(i: &str) -> NomResult<Vec<VarSpec>> {
+fn segment_var_list(i: &str) -> NomResult<'_, Vec<VarSpec>> {
     separated_list1(char(','), segment_varspec)(i)
 }
 
 // segment-varspec       =  varname [ prefix ]
-fn segment_varspec(i: &str) -> NomResult<VarSpec> {
+fn segment_varspec(i: &str) -> NomResult<'_, VarSpec> {
     map(
         pair(
             varname,
-            map(
-                opt( mod_prefix,),
-                |maybe| maybe.unwrap_or(VarMod::None)
-            )),
-        |(varname, modifier)| VarSpec{ varname: varname.to_owned(), modifier }
+            map(opt(mod_prefix), |maybe| maybe.unwrap_or(VarMod::None)),
+        ),
+        |(varname, modifier)| VarSpec {
+            varname: varname.to_owned(),
+            modifier,
+        },
     )(i)
 }
 
 //expression    =  "{" [ operator ] variable-list "}"
-fn expression(i: &str) -> NomResult<Part> {
-    map(map(
-        delimited(tag("{"), pair(opt(operator), variable_list), tag("}")),
-        Expression::from_pair
-    ), Part::Expression)(i)
+fn expression(i: &str) -> NomResult<'_, Part> {
+    map(
+        map(
+            delimited(tag("{"), pair(opt(operator), variable_list), tag("}")),
+            Expression::from_pair,
+        ),
+        Part::Expression,
+    )(i)
 }
 
 // authority-expresion = expression - "/"
-fn authority_expression(i: &str) -> NomResult<Part> {
-    map(map(
-        delimited(tag("{"), pair(opt(authority_operator), variable_list), tag("}")),
-        Expression::from_pair
-    ), Part::Expression)(i)
+fn authority_expression(i: &str) -> NomResult<'_, Part> {
+    map(
+        map(
+            delimited(
+                tag("{"),
+                pair(opt(authority_operator), variable_list),
+                tag("}"),
+            ),
+            Expression::from_pair,
+        ),
+        Part::Expression,
+    )(i)
 }
 
 // variable-list =  varspec *( "," varspec )
-fn variable_list(i: &str) -> NomResult<Vec<VarSpec>> {
+fn variable_list(i: &str) -> NomResult<'_, Vec<VarSpec>> {
     separated_list1(char(','), varspec)(i)
 }
 
 // varspec       =  varname [ modifier-level4 ]
 // modifier-level4 =  prefix / explode
-fn varspec(i: &str) -> NomResult<VarSpec> {
+fn varspec(i: &str) -> NomResult<'_, VarSpec> {
     map(
         pair(
             varname,
-            map(
-                opt(alt((
-                    mod_prefix,
-                    mod_explode
-                ))),
-                |maybe| maybe.unwrap_or(VarMod::None)
-            )),
-        |(varname, modifier)| VarSpec{ varname: varname.to_owned(), modifier }
+            map(opt(alt((mod_prefix, mod_explode))), |maybe| {
+                maybe.unwrap_or(VarMod::None)
+            }),
+        ),
+        |(varname, modifier)| VarSpec {
+            varname: varname.to_owned(),
+            modifier,
+        },
     )(i)
 }
 
 // varname       =  varchar *( ["."] varchar )
-fn varname(i: &str) -> NomResult<&str> {
-    recognize(pair(many1_count(varchar), many0_count(alt((varchar, char('.'))))))(i)
+fn varname(i: &str) -> NomResult<'_, &str> {
+    recognize(pair(
+        many1_count(varchar),
+        many0_count(alt((varchar, char('.')))),
+    ))(i)
 }
 
 // prefix        =  ":" max-length
 // max-length    =  %x31-39 0*3DIGIT   ; positive integer < 10000
-fn mod_prefix(i: &str) -> NomResult<VarMod> {
+fn mod_prefix(i: &str) -> NomResult<'_, VarMod> {
     preceded(
         char(':'),
         map(
             map_parser(
-                recognize(pair(one_of("123456789"), fold_many_m_n(0, 3, digit, || 0, |_,_| 0))),
-                character::u16
+                recognize(pair(
+                    one_of("123456789"),
+                    fold_many_m_n(0, 3, digit, || 0, |_, _| 0),
+                )),
+                character::u16,
             ),
-            VarMod::Prefix
-        )
+            VarMod::Prefix,
+        ),
     )(i)
 }
 
 // explode       =  "*"
-fn mod_explode(i: &str) -> NomResult<VarMod> {
+fn mod_explode(i: &str) -> NomResult<'_, VarMod> {
     value(VarMod::Explode, char('*'))(i)
 }
 
@@ -470,69 +516,66 @@ fn mod_explode(i: &str) -> NomResult<VarMod> {
 // op-level2     =  "+" / "#"
 // op-level3     =  "." / ";" / "?" / "&" / "/"
 // op-reserve    =  "=" / "," / "!" / "@" / "|"
-fn operator(i: &str) -> NomResult<char> {
+fn operator(i: &str) -> NomResult<'_, char> {
     one_of("+.;&=,!@|/#?")(i)
 }
 
 // tail_operator = operator - ?#/, used in "rest" path matches
 //
-fn tail_operator(i: &str) -> NomResult<char> {
+fn tail_operator(i: &str) -> NomResult<'_, char> {
     one_of("+.;&=,!@|")(i)
 }
 
 // authority_operator = operator - /, used in the "authority" part
 //
-fn authority_operator(i: &str) -> NomResult<char> {
+fn authority_operator(i: &str) -> NomResult<'_, char> {
     one_of("+.;&=,!@|#?")(i)
 }
 
 // pchar = unreserved / pct-encoded / sub-delims / ":" / "@"
-fn pchar(i: &str) -> NomResult<char> {
+fn pchar(i: &str) -> NomResult<'_, char> {
     alt((unreserved, pct_encoded, sub_delims, one_of(":@")))(i)
 }
 
 //
 // unreserved    = ALPHA / DIGIT / "-" / "." / "_" / "~"
-fn unreserved(i: &str) -> NomResult<char> {
+fn unreserved(i: &str) -> NomResult<'_, char> {
     alt((alphanumeric, one_of("-._~")))(i)
 }
 // sub-delims    = "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
-fn sub_delims(i: &str) -> NomResult<char> {
+fn sub_delims(i: &str) -> NomResult<'_, char> {
     one_of("!$&'()*+,;=")(i)
 }
 
 // varchar       =  ALPHA / DIGIT / "_" / pct-encoded
-fn varchar(i: &str) -> NomResult<char> {
+fn varchar(i: &str) -> NomResult<'_, char> {
     alt((alpha, digit, char('_'), pct_encoded))(i)
 }
 
-fn alphanumeric( i: &str) -> NomResult<char> {
+fn alphanumeric(i: &str) -> NomResult<'_, char> {
     alt((alpha, digit))(i)
 }
 
-fn alpha(i: &str) -> NomResult<char> {
+fn alpha(i: &str) -> NomResult<'_, char> {
     one_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")(i)
 }
 
-fn digit(i: &str) -> NomResult<char> {
+fn digit(i: &str) -> NomResult<'_, char> {
     one_of("0123456789")(i)
 }
 
-fn hexdig(i: &str) -> NomResult<char> {
+fn hexdig(i: &str) -> NomResult<'_, char> {
     one_of("0123456789ABCDEFabcdef")(i)
 }
 
 //pct-encoded   = "%" HEXDIG HEXDIG
-fn pct_encoded(i: &str) -> NomResult<char> {
+fn pct_encoded(i: &str) -> NomResult<'_, char> {
     preceded(
         char('%'),
         map_opt(
-            map_parser(
-                recognize(pair(hexdig, hexdig)),
-                hex_u32
-            ),
-            core::char::from_u32
-        )
+            map_parser(recognize(pair(hexdig, hexdig)), hex_u32),
+            core::char::from_u32,
+        ),
     )(i)
 }
 
@@ -547,40 +590,44 @@ fn pct_encoded(i: &str) -> NomResult<char> {
 // /         %xA0000-AFFFD /           %xB0000-BFFFD
 // /         %xC0000-CFFFD /           %xD0000-DFFFD
 // /         %xE1000-EFFFD
-fn ucschar(i: &str) -> NomResult<char> {
-    satisfy(|ch| matches!(ch,
-             '\u{A0}'..='\u{D7FF}' | '\u{F900}'..='\u{FDCF}'
-        |  '\u{FDF0}'..='\u{FFEF}' |'\u{10000}'..='\u{1FFFD}'
-        |'\u{20000}'..='\u{2FFFD}' |'\u{30000}'..='\u{3FFFD}'
-        |'\u{40000}'..='\u{4FFFD}' |'\u{50000}'..='\u{5FFFD}'
-        |'\u{60000}'..='\u{6FFFD}' |'\u{70000}'..='\u{7FFFD}'
-        |'\u{80000}'..='\u{8FFFD}' |'\u{90000}'..='\u{9FFFD}'
-        |'\u{A0000}'..='\u{AFFFD}' |'\u{B0000}'..='\u{BFFFD}'
-        |'\u{C0000}'..='\u{CFFFD}' |'\u{D0000}'..='\u{DFFFD}'
-        |'\u{E1000}'..='\u{EFFFD}'
-    ))(i)
+fn ucschar(i: &str) -> NomResult<'_, char> {
+    satisfy(|ch| {
+        matches!(ch,
+                 '\u{A0}'..='\u{D7FF}' | '\u{F900}'..='\u{FDCF}'
+            |  '\u{FDF0}'..='\u{FFEF}' |'\u{10000}'..='\u{1FFFD}'
+            |'\u{20000}'..='\u{2FFFD}' |'\u{30000}'..='\u{3FFFD}'
+            |'\u{40000}'..='\u{4FFFD}' |'\u{50000}'..='\u{5FFFD}'
+            |'\u{60000}'..='\u{6FFFD}' |'\u{70000}'..='\u{7FFFD}'
+            |'\u{80000}'..='\u{8FFFD}' |'\u{90000}'..='\u{9FFFD}'
+            |'\u{A0000}'..='\u{AFFFD}' |'\u{B0000}'..='\u{BFFFD}'
+            |'\u{C0000}'..='\u{CFFFD}' |'\u{D0000}'..='\u{DFFFD}'
+            |'\u{E1000}'..='\u{EFFFD}'
+        )
+    })(i)
 }
 
 // iprivate       =  %xE000-F8FF / %xF0000-FFFFD / %x100000-10FFFD
-fn iprivate(i: &str) -> NomResult<char> {
-    satisfy(|ch| matches!(ch,
-        '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}'
-    ))(i)
+fn iprivate(i: &str) -> NomResult<'_, char> {
+    satisfy(|ch| {
+        matches!(ch,
+            '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}'
+        )
+    })(i)
 }
-
-
 
 use nomnumber::hex_u32;
 // lifted from nom-future
 mod nomnumber {
     use std::ops::{RangeFrom, RangeTo};
 
-    use nom::{error::{ErrorKind, ParseError}, AsBytes, AsChar, IResult, InputLength, InputTakeAtPosition, Slice};
-
+    use nom::{
+        error::{ErrorKind, ParseError},
+        AsBytes, AsChar, IResult, InputLength, InputTakeAtPosition, Slice,
+    };
 
     #[inline]
     pub(super) fn hex_u32<I, E: ParseError<I>>(input: I) -> IResult<I, u32, E>
-where
+    where
         I: InputTakeAtPosition,
         I: Slice<RangeFrom<usize>> + Slice<RangeTo<usize>>,
         <I as InputTakeAtPosition>::Item: AsChar,
@@ -616,9 +663,7 @@ where
 
         Ok((remaining, res))
     }
-
 }
-
 
 #[cfg(test)]
 mod test {
@@ -629,201 +674,285 @@ mod test {
     #[test]
     fn test_parse() {
         let input = "http://example.com/user/{user_id}{?something,mysterious}";
-        assert_eq!(parse(input), Ok(Parsed{
-            auth: Some(vec![
-                Part::Lit("http:".to_string()),
-                Part::Lit("//".to_string()),
-                Part::Lit("example.com".to_string())
-            ]),
-            path: vec![
-                Part::Lit("/user".to_string()),
-                Part::SegVar(Expression{
-                    operator: Op::Simple,
-                    varspecs: vec![
-                        VarSpec{varname: "user_id".to_string(), modifier: VarMod::None}
-                    ]})
-            ],
-            query: Some(vec![
-                Part::Expression(Expression{
+        assert_eq!(
+            parse(input),
+            Ok(Parsed {
+                auth: Some(vec![
+                    Part::Lit("http:".to_string()),
+                    Part::Lit("//".to_string()),
+                    Part::Lit("example.com".to_string())
+                ]),
+                path: vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegVar(Expression {
+                        operator: Op::Simple,
+                        varspecs: vec![VarSpec {
+                            varname: "user_id".to_string(),
+                            modifier: VarMod::None
+                        }]
+                    })
+                ],
+                query: Some(vec![Part::Expression(Expression {
                     operator: Op::Query,
                     varspecs: vec![
-                        VarSpec { varname: "something".to_string(), modifier: VarMod::None },
-                        VarSpec { varname: "mysterious".to_string(), modifier: VarMod::None }
-                    ]})
-            ]),
-        }));
+                        VarSpec {
+                            varname: "something".to_string(),
+                            modifier: VarMod::None
+                        },
+                        VarSpec {
+                            varname: "mysterious".to_string(),
+                            modifier: VarMod::None
+                        }
+                    ]
+                })]),
+                assocs: vec![]
+            })
+        );
         let input = "/user/{user_id}{?something,mysterious}";
-        assert_eq!(parse(input), Ok(Parsed{
-            path: vec![
-                Part::Lit("/user".to_string()),
-                Part::SegVar(Expression{
-                    operator: Op::Simple,
-                    varspecs: vec![
-                        VarSpec{varname: "user_id".to_string(), modifier: VarMod::None}
-                    ]})
-            ],
-            query: Some(vec![
-                Part::Expression(Expression{
+        assert_eq!(
+            parse(input),
+            Ok(Parsed {
+                path: vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegVar(Expression {
+                        operator: Op::Simple,
+                        varspecs: vec![VarSpec {
+                            varname: "user_id".to_string(),
+                            modifier: VarMod::None
+                        }]
+                    })
+                ],
+                query: Some(vec![Part::Expression(Expression {
                     operator: Op::Query,
                     varspecs: vec![
-                        VarSpec { varname: "something".to_string(), modifier: VarMod::None },
-                        VarSpec { varname: "mysterious".to_string(), modifier: VarMod::None }
-                    ]})
-            ]),
-           ..Parsed::default()
-        }));
-        assert_eq!(parse("/user/{user_id}?something=good{&mysterious}"), Ok(Parsed{
-            path: vec![
-                Part::Lit("/user".to_string()),
-                Part::SegVar(Expression{
-                    operator: Op::Simple,
-                    varspecs: vec![
-                        VarSpec{varname: "user_id".to_string(), modifier: VarMod::None}
-                    ]})
-            ],
-            query: Some(vec![
-                Part::Lit("?something=good".to_string()),
-                Part::Expression(Expression{
-                    operator: Op::QueryCont,
-                    varspecs: vec![
-                        VarSpec { varname: "mysterious".to_string(), modifier: VarMod::None }
-                    ]})
-            ]),
-           ..Parsed::default()
-        }));
+                        VarSpec {
+                            varname: "something".to_string(),
+                            modifier: VarMod::None
+                        },
+                        VarSpec {
+                            varname: "mysterious".to_string(),
+                            modifier: VarMod::None
+                        }
+                    ]
+                })]),
+                ..Parsed::default()
+            })
+        );
+        assert_eq!(
+            parse("/user/{user_id}?something=good{&mysterious}"),
+            Ok(Parsed {
+                path: vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegVar(Expression {
+                        operator: Op::Simple,
+                        varspecs: vec![VarSpec {
+                            varname: "user_id".to_string(),
+                            modifier: VarMod::None
+                        }]
+                    })
+                ],
+                query: Some(vec![
+                    Part::Lit("?something=good".to_string()),
+                    Part::Expression(Expression {
+                        operator: Op::QueryCont,
+                        varspecs: vec![VarSpec {
+                            varname: "mysterious".to_string(),
+                            modifier: VarMod::None
+                        }]
+                    })
+                ]),
+                ..Parsed::default()
+            })
+        );
         let input = "/user/{user_id,user_name}";
-        assert_eq!(parse(input), Ok(Parsed{
-            path: vec![
-                Part::Lit("/user".to_string()),
-                Part::SegVar(Expression{
-                    operator: Op::Simple,
-                    varspecs: vec![
-                        VarSpec{varname: "user_id".to_string(), modifier: VarMod::None},
-                        VarSpec{varname: "user_name".to_string(), modifier: VarMod::None}
-                    ]})
-            ],
-           ..Parsed::default()
-        }));
+        assert_eq!(
+            parse(input),
+            Ok(Parsed {
+                path: vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegVar(Expression {
+                        operator: Op::Simple,
+                        varspecs: vec![
+                            VarSpec {
+                                varname: "user_id".to_string(),
+                                modifier: VarMod::None
+                            },
+                            VarSpec {
+                                varname: "user_name".to_string(),
+                                modifier: VarMod::None
+                            }
+                        ]
+                    })
+                ],
+                ..Parsed::default()
+            })
+        );
         let input = "/user{/user_id,user_name}";
-        assert_eq!(parse(input), Ok(Parsed{
-            path: vec![
-                Part::Lit("/user".to_string()),
-                Part::SegPathVar(Expression{
-                    operator: Op::Path,
-                    varspecs: vec![
-                        VarSpec{varname: "user_id".to_string(), modifier: VarMod::None},
-                        VarSpec{varname: "user_name".to_string(), modifier: VarMod::None}
-                    ]})
-            ],
-           ..Parsed::default()
-        }));
+        assert_eq!(
+            parse(input),
+            Ok(Parsed {
+                path: vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegPathVar(Expression {
+                        operator: Op::Path,
+                        varspecs: vec![
+                            VarSpec {
+                                varname: "user_id".to_string(),
+                                modifier: VarMod::None
+                            },
+                            VarSpec {
+                                varname: "user_name".to_string(),
+                                modifier: VarMod::None
+                            }
+                        ]
+                    })
+                ],
+                ..Parsed::default()
+            })
+        );
         let input = "/user{/user_id}";
-        assert_eq!(parse(input), Ok(Parsed{
-            path: vec![
-                Part::Lit("/user".to_string()),
-                Part::SegPathVar(Expression{
-                    operator: Op::Path,
-                    varspecs: vec![
-                        VarSpec{varname: "user_id".to_string(), modifier: VarMod::None}
-                    ]})
-            ],
-           ..Parsed::default()
-        }));
+        assert_eq!(
+            parse(input),
+            Ok(Parsed {
+                path: vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegPathVar(Expression {
+                        operator: Op::Path,
+                        varspecs: vec![VarSpec {
+                            varname: "user_id".to_string(),
+                            modifier: VarMod::None
+                        }]
+                    })
+                ],
+                ..Parsed::default()
+            })
+        );
         let input = "/user/{user_id*}";
-        assert_eq!(parse(input), Ok(Parsed{
-            path: vec![
-                Part::Lit("/user".to_string()),
-                Part::SegRest(Expression{
-                    operator: Op::Simple,
-                    varspecs: vec![
-                        VarSpec{varname: "user_id".to_string(), modifier: VarMod::Explode}
-                    ]})
-            ],
-           ..Parsed::default()
-        }));
+        assert_eq!(
+            parse(input),
+            Ok(Parsed {
+                path: vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegRest(Expression {
+                        operator: Op::Simple,
+                        varspecs: vec![VarSpec {
+                            varname: "user_id".to_string(),
+                            modifier: VarMod::Explode
+                        }]
+                    })
+                ],
+                ..Parsed::default()
+            })
+        );
         let input = "/user{/user_id*}";
-        assert_eq!(parse(input), Ok(Parsed{
-            path: vec![
-                Part::Lit("/user".to_string()),
-                Part::SegPathRest(Expression{
-                    operator: Op::Path,
-                    varspecs: vec![
-                        VarSpec{varname: "user_id".to_string(), modifier: VarMod::Explode}
-                    ]})
-            ],
-           ..Parsed::default()
-        }));
+        assert_eq!(
+            parse(input),
+            Ok(Parsed {
+                path: vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegPathRest(Expression {
+                        operator: Op::Path,
+                        varspecs: vec![VarSpec {
+                            varname: "user_id".to_string(),
+                            modifier: VarMod::Explode
+                        }]
+                    })
+                ],
+                ..Parsed::default()
+            })
+        );
         let input = "/user/{user_id}";
-        assert_eq!(parse(input), Ok(Parsed{
-            path: vec![
-                Part::Lit("/user".to_string()),
-                Part::SegVar(Expression{
-                    operator: Op::Simple,
-                    varspecs: vec![
-                        VarSpec{varname: "user_id".to_string(), modifier: VarMod::None}
-                    ]})
-            ],
-           ..Parsed::default()
-        }));
+        assert_eq!(
+            parse(input),
+            Ok(Parsed {
+                path: vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegVar(Expression {
+                        operator: Op::Simple,
+                        varspecs: vec![VarSpec {
+                            varname: "user_id".to_string(),
+                            modifier: VarMod::None
+                        }]
+                    })
+                ],
+                ..Parsed::default()
+            })
+        );
         let input = "/";
-        assert_eq!(parse(input), Ok(Parsed{
-            path: vec![
-                Part::Lit("/".to_string()),
-            ],
-           ..Parsed::default()
-        }));
+        assert_eq!(
+            parse(input),
+            Ok(Parsed {
+                path: vec![Part::Lit("/".to_string()),],
+                ..Parsed::default()
+            })
+        );
     }
 
     #[test]
     fn test_path() {
         assert_eq!(
             path("/user/{user_id}"),
-            Ok(("", vec![
-                Part::Lit("/user".to_string()),
-                Part::SegVar(Expression{
-                    operator: Op::Simple,
-                    varspecs: vec![
-                    VarSpec{varname: "user_id".to_string(), modifier: VarMod::None}
-                ]})
-            ]))
+            Ok((
+                "",
+                vec![
+                    Part::Lit("/user".to_string()),
+                    Part::SegVar(Expression {
+                        operator: Op::Simple,
+                        varspecs: vec![VarSpec {
+                            varname: "user_id".to_string(),
+                            modifier: VarMod::None
+                        }]
+                    })
+                ]
+            ))
         )
     }
 
     #[test]
     fn test_segment() {
-        assert_eq!(
-            segment("/user"),
-            Ok(("",
-                Part::Lit("/user".to_string()),
-            ))
-        );
+        assert_eq!(segment("/user"), Ok(("", Part::Lit("/user".to_string()),)));
         assert_eq!(
             segment("/{user_id}"),
-            Ok(("", Part::SegVar(Expression{
-                operator: Op::Simple,
-                varspecs: vec![
-                VarSpec{varname: "user_id".to_string(), modifier: VarMod::None}
-            ]})))
+            Ok((
+                "",
+                Part::SegVar(Expression {
+                    operator: Op::Simple,
+                    varspecs: vec![VarSpec {
+                        varname: "user_id".to_string(),
+                        modifier: VarMod::None
+                    }]
+                })
+            ))
         )
     }
 
     #[test]
     fn test_segment_variable() {
-        assert_eq!(segment_variable("/{user_id}"),
-            Ok(("", Part::SegVar(Expression{
-                operator: Op::Simple,
-                varspecs: vec![
-                    VarSpec{varname: "user_id".to_string(), modifier: VarMod::None}
-                ]})
+        assert_eq!(
+            segment_variable("/{user_id}"),
+            Ok((
+                "",
+                Part::SegVar(Expression {
+                    operator: Op::Simple,
+                    varspecs: vec![VarSpec {
+                        varname: "user_id".to_string(),
+                        modifier: VarMod::None
+                    }]
+                })
             ))
         )
     }
 
     #[test]
     fn test_segment_varspec() {
-        assert_eq!(segment_varspec("user_id"),
-            Ok(("",
-                VarSpec{varname: "user_id".to_string(), modifier: VarMod::None}
+        assert_eq!(
+            segment_varspec("user_id"),
+            Ok((
+                "",
+                VarSpec {
+                    varname: "user_id".to_string(),
+                    modifier: VarMod::None
+                }
             ))
         )
     }
@@ -836,21 +965,21 @@ mod test {
 
     #[test]
     fn test_pct_encoded() {
-        assert_eq!(
-            pct_encoded("%30*"),
-            Ok(("*", '0'))
-        );
-        assert_eq!(
-            pct_encoded("%41g"),
-            Ok(("g", 'A'))
-        );
+        assert_eq!(pct_encoded("%30*"), Ok(("*", '0')));
+        assert_eq!(pct_encoded("%41g"), Ok(("g", 'A')));
         assert_eq!(
             pct_encoded("41"),
-            Err(nom::Err::Error(nom::error::Error { input: "41", code: ErrorKind::Char }))
+            Err(nom::Err::Error(nom::error::Error {
+                input: "41",
+                code: ErrorKind::Char
+            }))
         );
         assert_eq!(
             pct_encoded("%4"),
-            Err(nom::Err::Error(nom::error::Error { input: "", code: ErrorKind::OneOf }))
+            Err(nom::Err::Error(nom::error::Error {
+                input: "",
+                code: ErrorKind::OneOf
+            }))
         );
     }
 }

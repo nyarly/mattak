@@ -44,7 +44,12 @@
             [
               # (rust-bin.selectLatestNightlyWith ( toolchain: toolchain.default))
               # .override { extensions = [ "rust-analyzer" ]; }
-              (rust-bin.stable.latest.default.override { extensions = [ "rust-analyzer" ]; })
+              (rust-bin.stable.latest.default.override {
+                extensions = [
+                  "rust-analyzer"
+                  "rust-src"
+                ];
+              })
               #cargo
               #cargo-expand
               #rustc

@@ -6,6 +6,7 @@ use tracing::debug;
 use crate::routing;
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error("unknown error: {0}")]
     Unknown(String),
@@ -27,6 +28,8 @@ pub enum Error {
     RegexParse(#[from] regex::Error),
     #[error("for variable {0:?}: two different values: {1:?} vs {2:?}")]
     MismatchedValues(String, String, String),
+    #[error("unexpected variable names {0:?}")]
+    UnexpectedVariables(Vec<String>),
     #[error("no match: {0:?}")]
     NoMatch(String),
     #[error("capture deserialization: {0:?}")]
@@ -72,7 +75,6 @@ impl IntoResponse for Error {
         use http::status::StatusCode;
         debug!("Returning error: {:?}", &self);
         match self {
-            // best errors: we know how they match up to status codes
             Error::NoToken => (StatusCode::UNAUTHORIZED, "/api/authentication").into_response(),
             Error::RevokedToken => {
                 (StatusCode::UNAUTHORIZED, "/api/authentication").into_response()
@@ -81,8 +83,6 @@ impl IntoResponse for Error {
                 (StatusCode::FORBIDDEN, "insufficient access").into_response()
             }
             Error::PreconditionFailed(s) => (StatusCode::PRECONDITION_FAILED, s).into_response(),
-
-            // upstream knows better
             Error::Token(err) => match err {
                 biscuit_auth::error::Token::ConversionError(_) => {
                     (StatusCode::BAD_REQUEST, "couldn't convert token").into_response()
@@ -105,15 +105,12 @@ impl IntoResponse for Error {
             Error::PathParams(e) => e.into_response(),
             Error::Host(e) => e.into_response(),
             Error::Query(e) => e.into_response(),
-
-            // presumed client errors
-            Error::MismatchedValues(_, _, _)
+            Error::UnexpectedVariables(_)
+            | Error::MismatchedValues(_, _, _)
             | Error::InvalidInput(_)
             | Error::BadETagFormat(_)
             | Error::InvalidHeaderValue(_)
             | Error::Header(_) => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
-
-            // presumed server errors
             Error::MissingContext
             | Error::Unknown(_)
             | Error::CreateString(_)
