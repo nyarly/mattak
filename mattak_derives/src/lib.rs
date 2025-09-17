@@ -1,7 +1,7 @@
+use mattak::routing::template_vars;
 use proc_macro::TokenStream as StdTokenStream;
 use proc_macro2::{Delimiter, Ident, TokenStream, TokenTree};
 use quote::quote;
-use mattak::routing::template_vars;
 
 /*
 * Given
@@ -14,46 +14,28 @@ pub(crate) enum MyRoute {
 
 * Produce
 impl RouteTemplate for MyRoute {
-    fn route_template(&self) -> String {
-        "/event_games/{event_id}/user/{user_id}".to_string()
+    fn route_template() -> RouteTemplateString {
+        RouteTemplateString("/event_games/{event_id}/user/{user_id}".to_string())
     }
 }
 */
 
-#[proc_macro_derive(Route, attributes(template))]
+#[proc_macro_derive(Route, attributes(template, assoc))]
 pub fn route_derive(annotated_item: StdTokenStream) -> StdTokenStream {
-    let (struct_name, template, vars, var_types) = parse_route(annotated_item);
+    let (struct_name, template, vars, _var_types, assoc_vars) = parse_route(annotated_item);
 
-    // XXX here there should be comparison of the template and the vars
     validate_route(template.clone(), vars.clone());
 
     let expanded = quote! {
         impl ::mattak::routing::Route for #struct_name {
             fn route_template() -> ::mattak::routing::RouteTemplateString {
-                ::mattak::routing::RouteTemplateString(#template.to_string())
+                ::mattak::routing::RouteTemplateString(#template.to_string(), vec![#(stringify!(#assoc_vars).to_string()),*])
             }
         }
 
         impl ::mattak::routing::Listable for #struct_name {
             fn list_vars(&self) -> Vec<String> {
                 vec![#(stringify!(#vars).to_string()),*]
-            }
-        }
-
-        impl ::mattak::routing::context::Context for #struct_name {
-            fn visit<V: ::mattak::routing::context::Visitor>(&self, visitor: V) -> V::Result {
-                match visitor.var_name().as_str() {
-                    #( stringify!(#vars) => visitor.visit_string(self.#vars.clone()), )*
-                    _ => visitor.visit_undefined()
-                }
-            }
-        }
-
-        impl<'de> ::serde::Deserialize<'de> for #struct_name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where D: ::serde::Deserializer<'de> {
-                let ( #( #vars ),* ) = <( #( #var_types ),* ) as ::serde::Deserialize>::deserialize(deserializer)?;
-                Ok(Self{ #( #vars ),* })
             }
         }
     };
@@ -65,12 +47,11 @@ pub fn route_derive(annotated_item: StdTokenStream) -> StdTokenStream {
     expanded.into()
 }
 
-
 fn validate_route(template: TokenStream, vars: Vec<Ident>) {
     let mut tmpl_iter = template.into_iter();
     let tmpl_string = match tmpl_iter.next() {
         Some(TokenTree::Literal(t)) => t.to_string(),
-        _ => panic!("#[template(...)] argument must be a string!")
+        _ => panic!("#[template(...)] argument must be a string!"),
     };
     let tmpl_string = tmpl_string.trim_matches('"');
     #[cfg(debug_output)]
@@ -91,8 +72,6 @@ fn validate_route(template: TokenStream, vars: Vec<Ident>) {
         panic!("fields of a Route have to match their #[template(...)] vars!");
     }
 }
-
-
 
 /*
 * Given
@@ -128,7 +107,6 @@ pub fn route_template_derive(annotated_item: StdTokenStream) -> StdTokenStream {
     eprintln!("{}", expanded);
     expanded.into()
 }
-
 
 /*
 Given:
@@ -235,12 +213,11 @@ fn parse(input: StdTokenStream) -> (Ident, Vec<Ident>, Vec<TokenTree>) {
     eprintln!("INPUT: {:?}\n\n", proc2_item);
     let mut tok_iter = proc2_item.into_iter().peekable();
 
-
     loop {
         match tok_iter.next() {
             Some(TokenTree::Ident(s)) if s == "struct" => break,
             None => panic!("cannot derive Listable without a struct"),
-            _ => ()
+            _ => (),
         }
     }
 
@@ -260,9 +237,10 @@ fn parse(input: StdTokenStream) -> (Ident, Vec<Ident>, Vec<TokenTree>) {
             (TokenTree::Ident(var), Some(TokenTree::Punct(punct))) if punct.as_char() == ':' => {
                 fields.push(var);
                 body_iter.next(); // consume the ':'
-                field_types.push(body_iter.next().expect("a single ident type after :")) // naive assumption
-            },
-            _ => ()
+                field_types.push(body_iter.next().expect("a single ident type after :"))
+                // naive assumption
+            }
+            _ => (),
         }
     }
 
@@ -282,42 +260,37 @@ fn parse_route_template(input: StdTokenStream) -> (Ident, TokenStream) {
 
     let mut attr_iter: std::iter::Peekable<proc_macro2::token_stream::IntoIter>;
     loop {
-
         loop {
             match tok_iter.next() {
                 Some(TokenTree::Punct(p)) if p.as_char() == '#' => break,
                 None => panic!("Route template requires #[template(\"...\")]"),
-                _ => ()
+                _ => (),
             }
         }
 
         let attr = match tok_iter.next() {
-            Some(TokenTree::Group(br)) if br.delimiter() == Delimiter::Bracket => {
-                br.stream()
-            },
-            _ => panic!("#[template(...)] required by RouteTemplate")
+            Some(TokenTree::Group(br)) if br.delimiter() == Delimiter::Bracket => br.stream(),
+            _ => panic!("#[template(...)] required by RouteTemplate"),
         };
 
         attr_iter = attr.into_iter().peekable();
         match attr_iter.next() {
             Some(TokenTree::Ident(n)) if n == "template" => break,
             Some(TokenTree::Ident(_)) => (),
-            _ => panic!("expecting an attribute name inside #[...]")
+            _ => panic!("expecting an attribute name inside #[...]"),
         };
     }
 
     let template = match attr_iter.next() {
-        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
-            g.stream()
-        },
-        _ => panic!("#[template] must have (\"<template>\")")
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g.stream(),
+        _ => panic!("#[template] must have (\"<template>\")"),
     };
 
     loop {
         match tok_iter.next() {
             Some(TokenTree::Ident(s)) if s == "struct" => break,
             None => panic!("RouteTemplate can only be derived on a struct"),
-            _ => ()
+            _ => (),
         }
     }
 
@@ -334,7 +307,9 @@ fn parse_route_template(input: StdTokenStream) -> (Ident, TokenStream) {
     (struct_name, template)
 }
 
-fn parse_route(input: StdTokenStream) -> (Ident, TokenStream, Vec<Ident>, Vec<TokenTree>) {
+fn parse_route(
+    input: StdTokenStream,
+) -> (Ident, TokenStream, Vec<Ident>, Vec<TokenTree>, Vec<Ident>) {
     let proc2_item = TokenStream::from(input);
     #[cfg(debug_output)]
     eprintln!("INPUT: {:?}\n\n", proc2_item);
@@ -342,42 +317,37 @@ fn parse_route(input: StdTokenStream) -> (Ident, TokenStream, Vec<Ident>, Vec<To
 
     let mut attr_iter: std::iter::Peekable<proc_macro2::token_stream::IntoIter>;
     loop {
-
         loop {
             match tok_iter.next() {
                 Some(TokenTree::Punct(p)) if p.as_char() == '#' => break,
                 None => panic!("Route template requires #[template(\"...\")]"),
-                _ => ()
+                _ => (),
             }
         }
 
         let attr = match tok_iter.next() {
-            Some(TokenTree::Group(br)) if br.delimiter() == Delimiter::Bracket => {
-                br.stream()
-            },
-            _ => panic!("#[template(...)] required by RouteTemplate")
+            Some(TokenTree::Group(br)) if br.delimiter() == Delimiter::Bracket => br.stream(),
+            _ => panic!("#[template(...)] required by RouteTemplate"),
         };
 
         attr_iter = attr.into_iter().peekable();
         match attr_iter.next() {
             Some(TokenTree::Ident(n)) if n == "template" => break,
             Some(TokenTree::Ident(_)) => (),
-            _ => panic!("expecting an attribute name inside #[...]")
+            _ => panic!("expecting an attribute name inside #[...]"),
         };
     }
 
     let template = match attr_iter.next() {
-        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
-            g.stream()
-        },
-        _ => panic!("#[template] must have (\"<template>\")")
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g.stream(),
+        _ => panic!("#[template] must have (\"<template>\")"),
     };
 
     loop {
         match tok_iter.next() {
             Some(TokenTree::Ident(s)) if s == "struct" => break,
-            None => panic!("RouteTemplate can only be derived on a struct"),
-            _ => ()
+            None => panic!("Route can only be derived on a struct"),
+            _ => (),
         }
     }
 
@@ -392,18 +362,40 @@ fn parse_route(input: StdTokenStream) -> (Ident, TokenStream, Vec<Ident>, Vec<To
     };
     let mut body_iter = body.stream().into_iter().peekable();
     let mut fields = vec![];
+    let mut assocs = vec![];
     let mut field_types = vec![];
+    let mut next_is_assoc = false;
     while let Some(tok) = body_iter.next() {
         match (tok, body_iter.peek()) {
+            (TokenTree::Punct(p), _) if p.as_char() == '#' => {
+                let attr = match body_iter.next() {
+                    Some(TokenTree::Group(br)) if br.delimiter() == Delimiter::Bracket => {
+                        br.stream()
+                    }
+                    _ => panic!("expecting #[...]"),
+                };
+                attr_iter = attr.into_iter().peekable();
+                match attr_iter.next() {
+                    Some(TokenTree::Ident(n)) if n == "assoc" => {
+                        next_is_assoc = true;
+                    }
+                    _ => panic!("expecting #[assoc]"),
+                };
+            }
             (TokenTree::Ident(var), Some(TokenTree::Punct(punct))) if punct.as_char() == ':' => {
+                if next_is_assoc {
+                    assocs.push(var.clone());
+                    next_is_assoc = false;
+                }
                 fields.push(var);
+
                 body_iter.next(); // consume the ':'
-                field_types.push(body_iter.next().expect("a single ident type after :")) // naive assumption
-            },
-            _ => ()
+                field_types.push(body_iter.next().expect("a single ident type after :"))
+                // naive assumption
+            }
+            _ => (),
         }
     }
-
 
     #[cfg(debug_output)]
     eprintln!("STRUCT: {:?}", struct_name);
@@ -412,5 +404,5 @@ fn parse_route(input: StdTokenStream) -> (Ident, TokenStream, Vec<Ident>, Vec<To
     #[cfg(debug_output)]
     eprintln!("FIELDS: {:?}", fields);
 
-    (struct_name, template , fields, field_types)
+    (struct_name, template, fields, field_types, assocs)
 }

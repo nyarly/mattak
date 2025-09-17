@@ -39,7 +39,7 @@ pub fn template_vars(template: &str) -> Vec<String> {
     let parsed = parser::parse(template).unwrap();
 
     parsed
-        .nonquery_parts_iter()
+        .parts_iter()
         .filter_map(|part| match part {
             Part::Lit(_) => None,
             Part::Expression(expression)
@@ -91,11 +91,15 @@ impl<RT: RouteTemplate + 'static> typemap_ors::Key for RTKey<RT> {
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
-pub struct RouteTemplateString(pub String);
+pub struct RouteTemplateString(pub String, pub Vec<String>);
 
 impl RouteTemplate for RouteTemplateString {
     fn route_template(&self) -> String {
         self.0.clone()
+    }
+
+    fn assoc_fields(&self) -> Vec<String> {
+        self.1.clone()
     }
 }
 
