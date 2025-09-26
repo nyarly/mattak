@@ -40,7 +40,7 @@ impl Op {
         }
     }
 
-    fn prefix(&self) -> &'static str {
+    pub(crate) fn prefix(&self) -> &'static str {
         use Op::*;
         match self {
             Simple => EMPTY,
@@ -54,7 +54,7 @@ impl Op {
         }
     }
 
-    pub(super) fn separator(&self) -> &'static str {
+    pub(crate) fn separator(&self) -> &'static str {
         use Op::*;
         match self {
             Simple => COMMA,
@@ -75,7 +75,7 @@ impl Op {
      * If there's a "=" joiner "foo=bar"
      */
 
-    pub(super) fn joiner(&self) -> &'static str {
+    pub(crate) fn joiner(&self) -> &'static str {
         use Op::*;
         match self {
             Simple => EMPTY,

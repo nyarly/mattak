@@ -28,6 +28,7 @@ mod de;
 pub mod extract;
 mod parser;
 mod render;
+mod ser;
 pub use de::UriDeserializationError;
 
 pub use iri_string::template::context;
@@ -177,6 +178,7 @@ pub fn route_config(rm: impl RouteTemplate + 'static) -> Entry {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Copy)]
 pub(crate) enum FillPolicy {
     Relaxed,
     NoMissing,

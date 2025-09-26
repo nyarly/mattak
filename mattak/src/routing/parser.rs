@@ -194,6 +194,17 @@ impl Part {
     fn to_lit(s: &str) -> Self {
         Part::Lit(s.to_owned())
     }
+
+    pub(crate) fn expression(&self) -> Option<&Expression> {
+        match self {
+            Part::Lit(_) => None,
+            Part::Expression(expression)
+            | Part::SegVar(expression)
+            | Part::SegPathVar(expression)
+            | Part::SegRest(expression)
+            | Part::SegPathRest(expression) => Some(&expression),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
