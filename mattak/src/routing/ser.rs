@@ -72,13 +72,7 @@ demark!(SLASH, "/");
 demark!(OCTOTHORPE, "#");
 
 #[derive(Debug)]
-struct VarBinding {
-    //XXX shuck this
-    val: Value,
-}
-
-#[derive(Debug)]
-enum Value {
+enum VarBinding {
     Absent,  // serialize value doesn't provide
     Omitted, // serialize value provides None
     Scalar(Rc<str>),
@@ -102,12 +96,11 @@ fn mapexprs(
     policy: FillPolicy,
     bindings: HashMap<Rc<str>, VarBinding>,
 ) -> Result<Vec<Rc<str>>, Error> {
-    eprintln!("template: {template:?}, policy: {policy:?}, binding: {bindings:?}");
     template
         .parts_iter()
         .map(|part| {
             use crate::routing::Part::*;
-            match dbg!(part) {
+            match part {
                 Lit(s) => Ok(vec![Rc::<str>::from(s.clone())]),
                 SegPathVar(expression) | SegPathRest(expression) | Expression(expression) => {
                     mapvars(expression, policy, &bindings)
@@ -139,16 +132,16 @@ fn mapvars(
 
     let mut joiner: Rc<str>;
     let mut specs = expression.varspecs.iter().peekable();
-    while dbg!(specs.peek()).is_some() {
+    while specs.peek().is_some() {
         joiner = prefix_for(expression);
-        while let Some(varspec) = dbg!(specs.peek()) {
+        while let Some(varspec) = specs.peek() {
             let name = Rc::from(varspec.varname.clone());
             let vmod = varspec.modifier.clone();
             let vb = bindings
                 .get(&name)
                 .ok_or(Error::BindingsDontMatchExpression)?;
-            match &vb.val {
-                Value::Absent => {
+            match vb {
+                VarBinding::Absent => {
                     use FillPolicy::*;
                     match policy {
                         NoMissing | Strict => {
@@ -160,11 +153,11 @@ fn mapvars(
                         }
                     }
                 }
-                Value::Omitted => {
+                VarBinding::Omitted => {
                     specs.next();
                 }
-                Value::Scalar(val) => {
-                    dbg!(specs.next());
+                VarBinding::Scalar(val) => {
+                    specs.next();
                     resolved.push(joiner.clone());
                     if matches!(expression.operator, PathParam | Query | QueryCont) {
                         resolved.push(name.clone());
@@ -186,7 +179,7 @@ fn mapvars(
                     }
                     joiner = separator_for(expression);
                 }
-                Value::List(items) => {
+                VarBinding::List(items) => {
                     specs.next();
                     if !(matches!(expression.operator, Label) && items.len() == 0) {
                         resolved.push(joiner.clone());
@@ -229,7 +222,7 @@ fn mapvars(
                     }
                     joiner = separator_for(expression);
                 }
-                Value::Map(items) => {
+                VarBinding::Map(items) => {
                     specs.next();
                     resolved.push(joiner.clone());
                     match (vmod, expression.operator) {
@@ -309,7 +302,7 @@ fn mapvars(
                 .get(&Rc::from(varspec.varname.clone()))
                 .ok_or(Error::BindingsDontMatchExpression)?;
 
-            if matches!(vb.val, Value::Absent) {
+            if matches!(vb, VarBinding::Absent) {
                 resolved.push(joiner);
                 resolved.push(varspec.to_str());
                 specs.next();
@@ -511,7 +504,7 @@ pub(super) fn fill_template(parsed: Parsed, context: impl Serialize) -> Result<S
 
 macro_rules! serializer_base_types {
     () => {
-        type Ok = Value;
+        type Ok = VarBinding;
         type Error = Error;
     };
 }
@@ -574,25 +567,21 @@ impl<'a> serde::Serializer for &'a mut Serializer {
     where
         T: ?Sized + Serialize,
     {
-        dbg!();
         let mut seq = self.serialize_tuple(1)?;
         SerializeSeq::serialize_element(&mut seq, value)?;
         SerializeSeq::end(seq)
     }
 
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-        dbg!();
         let seq = self.serialize_tuple(0)?;
         SerializeSeq::end(seq)
     }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
-        dbg!();
         self.serialize_unit()
     }
 
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-        dbg!();
         self.serialize_unit()
     }
 
@@ -602,7 +591,6 @@ impl<'a> serde::Serializer for &'a mut Serializer {
         _variant_index: u32,
         _variant: &'static str,
     ) -> Result<Self::Ok, Self::Error> {
-        dbg!();
         self.serialize_unit()
     }
 
@@ -614,7 +602,6 @@ impl<'a> serde::Serializer for &'a mut Serializer {
     where
         T: ?Sized + Serialize,
     {
-        dbg!();
         let mut seq = self.serialize_tuple(1)?;
         SerializeSeq::serialize_element(&mut seq, &value)?;
         SerializeSeq::end(seq)
@@ -630,19 +617,16 @@ impl<'a> serde::Serializer for &'a mut Serializer {
     where
         T: ?Sized + Serialize,
     {
-        dbg!();
         let mut seq = self.serialize_tuple(1)?;
         SerializeSeq::serialize_element(&mut seq, &value)?;
         SerializeSeq::end(seq)
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        dbg!();
         PositionSerializer::build(self.policy, len, self.template.clone())
     }
 
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        dbg!();
         PositionSerializer::build(self.policy, Some(len), self.template.clone())
     }
 
@@ -651,7 +635,6 @@ impl<'a> serde::Serializer for &'a mut Serializer {
         _name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        dbg!();
         PositionSerializer::build(self.policy, Some(len), self.template.clone())
     }
 
@@ -662,12 +645,10 @@ impl<'a> serde::Serializer for &'a mut Serializer {
         _variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        dbg!();
         PositionSerializer::build(self.policy, Some(len), self.template.clone())
     }
 
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        dbg!();
         NamedSerializer::build(self.policy, len, self.template.clone())
     }
 
@@ -676,7 +657,6 @@ impl<'a> serde::Serializer for &'a mut Serializer {
         _name: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        dbg!();
         NamedSerializer::build(self.policy, Some(len), self.template.clone())
     }
 
@@ -687,7 +667,6 @@ impl<'a> serde::Serializer for &'a mut Serializer {
         _variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        dbg!();
         NamedSerializer::build(self.policy, Some(len), self.template.clone())
     }
 }
@@ -719,7 +698,7 @@ impl PositionSerializer {
                         hash_map::Entry::Occupied(_) => (),
                         hash_map::Entry::Vacant(vacant_entry) => {
                             pos.push(name);
-                            vacant_entry.insert(VarBinding { val: Value::Absent });
+                            vacant_entry.insert(VarBinding::Absent);
                         }
                     }
                 }
@@ -770,16 +749,12 @@ macro_rules! pos_impl {
                     };
                 };
 
-                let binding = self
-                    .vals
-                    .get_mut(&name)
-                    .expect("positional names to index into variable hash");
-                binding.val = value.serialize(VariableSerializer {})?;
+                self.vals
+                    .insert(name, value.serialize(VariableSerializer {})?);
                 Ok(())
             }
 
             fn end(self) -> Result<Self::Ok, Self::Error> {
-                eprintln!("pos serializer end");
                 mapexprs(self.template, self.policy, self.vals)
                     .map(|v| v.iter().map(|rc| rc.as_ref()).collect())
             }
@@ -816,7 +791,7 @@ impl NamedSerializer {
                         hash_map::Entry::Occupied(_) => (),
                         hash_map::Entry::Vacant(vacant_entry) => {
                             field_count += 1;
-                            vacant_entry.insert(VarBinding { val: Value::Absent });
+                            vacant_entry.insert(VarBinding::Absent);
                         }
                     }
                 }
@@ -851,14 +826,13 @@ impl NamedSerializer {
         value: &T,
     ) -> Result<(), Error> {
         use FillPolicy::*;
-        let binding = match self.vals.get_mut(&name) {
-            Some(b) => b,
-            None => match self.policy {
+        match self.vals.entry(name.clone()) {
+            hash_map::Entry::Occupied(mut b) => b.insert(value.serialize(VariableSerializer {})?),
+            hash_map::Entry::Vacant(_) => match self.policy {
                 Relaxed | DropMissing | NoMissing => return Ok(()),
                 NoExtra | Strict => return Err(Error::ExtraNamedField(name.as_ref().into())),
             },
         };
-        binding.val = value.serialize(dbg!(VariableSerializer {}))?;
         Ok(())
     }
 }
@@ -878,8 +852,6 @@ impl<'a> SerializeMap for NamedSerializer {
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        dbg!();
-        eprintln!(" vals: {:?}", self.vals);
         mapexprs(self.template, self.policy, self.vals)
             .map(|v| v.iter().map(|rc| rc.as_ref()).collect())
     }
@@ -888,7 +860,6 @@ impl<'a> SerializeMap for NamedSerializer {
     where
         T: ?Sized + Serialize,
     {
-        dbg!();
         let _ = self.key.insert(key.serialize(KeySerializer {})?);
         Ok(())
     }
@@ -897,7 +868,6 @@ impl<'a> SerializeMap for NamedSerializer {
     where
         T: ?Sized + Serialize,
     {
-        dbg!();
         let name = if let Some(n) = self.key.take() {
             n
         } else {
@@ -916,19 +886,16 @@ impl<'a> SerializeStruct for NamedSerializer {
     where
         T: ?Sized + Serialize,
     {
-        dbg!();
         let name = Rc::<str>::from(key);
         self.insert_value(name, value)
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        dbg!();
         mapexprs(self.template, self.policy, self.vals)
             .map(|v| v.iter().map(|rc| rc.as_ref()).collect())
     }
 
     fn skip_field(&mut self, key: &'static str) -> Result<(), Self::Error> {
-        dbg!();
         let _ = key;
         Ok(())
     }
@@ -943,19 +910,16 @@ impl<'a> SerializeStructVariant for NamedSerializer {
     where
         T: ?Sized + Serialize,
     {
-        dbg!();
         let name = Rc::<str>::from(key);
         self.insert_value(name, value)
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        dbg!();
         mapexprs(self.template, self.policy, self.vals)
             .map(|v| v.iter().map(|rc| rc.as_ref()).collect())
     }
 
     fn skip_field(&mut self, key: &'static str) -> Result<(), Self::Error> {
-        dbg!();
         let _ = key;
         Ok(())
     }
@@ -964,7 +928,7 @@ impl<'a> SerializeStructVariant for NamedSerializer {
 macro_rules! render_single_value {
     ($trait_fn:ident, $ty:ty) => {
         fn $trait_fn(self, v: $ty) -> Result<Self::Ok, Self::Error> {
-            Ok(Value::Scalar(Rc::from(format!("{v}"))))
+            Ok(VarBinding::Scalar(Rc::from(format!("{v}"))))
         }
     };
 }
@@ -975,7 +939,6 @@ macro_rules! list_item {
         where
             T: ?Sized + Serialize,
         {
-            dbg!(stringify!($trait_fn));
             if let Some(v) = value.serialize(ValueSerializer {})? {
                 self.output.push(v);
             }
@@ -987,7 +950,7 @@ macro_rules! list_item {
 macro_rules! list_end {
     () => {
         fn end(self) -> Result<Self::Ok, Self::Error> {
-            Ok(Value::List(self.output))
+            Ok(VarBinding::List(self.output))
         }
     };
 }
@@ -995,7 +958,7 @@ macro_rules! list_end {
 macro_rules! map_end {
     () => {
         fn end(self) -> Result<Self::Ok, Self::Error> {
-            Ok(Value::Map(self.output))
+            Ok(VarBinding::Map(self.output))
         }
     };
 }
@@ -1020,25 +983,25 @@ impl serde::Serializer for VariableSerializer {
     render_single_value!(serialize_char, char);
 
     fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {
-        Ok(Value::Scalar(Rc::from(v)))
+        Ok(VarBinding::Scalar(Rc::from(v)))
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
-        Ok(Value::Scalar(Rc::from(
+        Ok(VarBinding::Scalar(Rc::from(
             str::from_utf8(v).map_err(Error::NotUTF8)?,
         )))
     }
 
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-        Ok(Value::Omitted)
+        Ok(VarBinding::Omitted)
     }
 
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-        Ok(Value::Omitted)
+        Ok(VarBinding::Omitted)
     }
 
     fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
-        Ok(Value::Omitted)
+        Ok(VarBinding::Omitted)
     }
 
     fn serialize_unit_variant(
@@ -1047,7 +1010,7 @@ impl serde::Serializer for VariableSerializer {
         _variant_index: u32,
         _variant: &'static str,
     ) -> Result<Self::Ok, Self::Error> {
-        Ok(Value::Omitted)
+        Ok(VarBinding::Omitted)
     }
 
     fn serialize_some<T>(self, value: &T) -> Result<Self::Ok, Self::Error>
@@ -1137,7 +1100,6 @@ struct ListSerializer {
 
 impl ListSerializer {
     fn new(size: Option<usize>) -> Self {
-        eprintln!("ListExplodeSerializer");
         Self {
             output: match size {
                 Some(s) => Vec::with_capacity(s),
@@ -1178,7 +1140,6 @@ struct AssocSerializer {
 
 impl AssocSerializer {
     fn new(size: Option<usize>) -> Self {
-        eprintln!("AssocExplodeSerializer");
         Self {
             key: None,
             output: match size {
@@ -1205,7 +1166,6 @@ impl SerializeMap for AssocSerializer {
     where
         T: ?Sized + Serialize,
     {
-        dbg!();
         let _ = self.key.insert(key.serialize(KeySerializer {})?);
         Ok(())
     }
@@ -1214,7 +1174,6 @@ impl SerializeMap for AssocSerializer {
     where
         T: ?Sized + Serialize,
     {
-        dbg!();
         let name = if let Some(n) = self.key.take() {
             n
         } else {
