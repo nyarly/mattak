@@ -82,6 +82,10 @@ use nom::{
 *   uri: Uri
 * }
 *
+* XXX Still needed: post parsing validations
+* e.g. not sure if "variable colisions" described below are actually forbidden
+* definitely needs to be place for them in the parsing process,
+* and then error cases can be added as their discovered.
 *
 */
 
@@ -120,11 +124,6 @@ all of the above pull 'foo' and 'bar' as variable names
 
 {/list*} -> at end-of-path: /:*list
 
-
-Non-features: (or v2)
-extracting variables outside of the path
-if you need that,
-parse the URL to get query, fragment, host
 *
 //
 //

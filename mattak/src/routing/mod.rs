@@ -178,12 +178,13 @@ pub fn route_config(rm: impl RouteTemplate + 'static) -> Entry {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum FillPolicy {
     Relaxed,
     NoMissing,
     NoExtra,
     Strict,
+    DropMissing,
 }
 
 use iri_string::template::context::{Context, Visitor};
