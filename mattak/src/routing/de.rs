@@ -660,14 +660,14 @@ impl UriDeserializer {
                         Ok((vname.clone(), VarBinding::Assoc("?".into(), assoc.clone())))
                     }
                     (None, None, None, None) => Ok((vname.clone(), VarBinding::Empty)),
+                    (None, None, Some(_), Some(_)) => {
+                        Err(error::Error::UnexpectedVariables(vec![vname.to_string()]))
+                    }
                     (Some(_), Some(_), _, _) => {
                         panic!("scalar and path explode should be caught in template parse")
                     }
                     (Some(_), _, Some(_), _) => {
                         panic!("scalar and query explode should be caught in template parse")
-                    }
-                    (None, None, Some(_), Some(_)) => {
-                        Err(error::Error::UnexpectedVariables(vec![vname.to_string()]))
                     }
                     (None, Some(_), _, Some(_)) => {
                         panic!("path explode and query assoc should be caught in parse")

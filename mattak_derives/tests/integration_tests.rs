@@ -27,12 +27,12 @@ struct AContext {
 struct EmptyContext {}
 
 #[derive(Route, Clone, PartialEq, Eq)]
-#[template("/event_games/{event_id}/user/{user_id}{?catchall*}")]
+#[template("/event_games/{event_id}/user/{user_id}{?query*}")]
 struct ARoute {
     event_id: u16,
     user_id: String,
     #[assoc]
-    catchall: HashMap<String, String>,
+    query: HashMap<String, String>,
 }
 
 #[test]
@@ -43,19 +43,19 @@ fn smoke_route() {
     let route = ARoute {
         event_id: 17,
         user_id: "mikey".to_string(),
-        catchall: HashMap::new(),
+        query: HashMap::new(),
     };
     assert_eq!(
         ARoute::route_template().route_template(),
-        "/event_games/{event_id}/user/{user_id}{?catchall*}"
+        "/event_games/{event_id}/user/{user_id}{?query*}"
     );
-    assert_eq!(ARoute::route_template().assoc_fields(), vec!["catchall"]);
+    assert_eq!(ARoute::route_template().assoc_fields(), vec!["query"]);
     assert_eq!(
         route.list_vars(),
         vec![
             "event_id".to_string(),
             "user_id".to_string(),
-            "catchall".to_string()
+            "query".to_string()
         ]
     );
 }

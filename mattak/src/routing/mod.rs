@@ -30,6 +30,7 @@ mod parser;
 mod render;
 mod ser;
 pub use de::UriDeserializationError;
+pub use ser::Error as UriSerializationError;
 
 pub use iri_string::template::context;
 
@@ -168,6 +169,13 @@ impl<RT: RouteTemplate> Map<RT> {
     }
 }
 
+/// The general entry point for routing. Pass a RouteTemplate in to get its cached parse,
+/// as an Entry. From there you can call methods to template URIs, match strings etc etc.
+///
+/// # Panics
+///
+/// Panics if the routing cache becomes poisoned, which doesn't happen by design.
+/// A panic on this function constitutes a bug.
 pub fn route_config(rm: impl RouteTemplate + 'static) -> Entry {
     let arcmutex = the_map();
     let mut map = arcmutex.lock().expect("route map not to be poisoned");
@@ -177,9 +185,8 @@ pub fn route_config(rm: impl RouteTemplate + 'static) -> Entry {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum FillPolicy {
+pub enum FillPolicy {
     Relaxed,
     NoMissing,
     NoExtra,
@@ -294,6 +301,15 @@ impl Entry {
     pub fn axum_route(&self) -> String {
         let inner = self.inner.read().expect("not poisoned");
         inner.axum_route()
+    }
+
+    pub fn serialize(
+        &self,
+        policy: FillPolicy,
+        context: impl serde::Serialize,
+    ) -> Result<IriReferenceString, Error> {
+        let inner = self.inner.read().expect("not poisoned");
+        inner.serialize(policy, context)
     }
 
     pub fn fill(&self, vars: impl Context + Listable) -> Result<IriReferenceString, Error> {
@@ -451,6 +467,14 @@ impl InnerSingle {
         Ok(t.into())
     }
 
+    fn serialize(
+        &self,
+        policy: FillPolicy,
+        context: impl serde::Serialize,
+    ) -> Result<IriReferenceString, Error> {
+        Ok(ser::fill(&self.parsed, policy, context)?.try_into()?)
+    }
+
     fn fill_uritemplate(
         &self,
         policy: FillPolicy,
@@ -468,7 +492,6 @@ impl InnerSingle {
             .inspect_err(|e| debug!("try_into: {e:?}"))?)
     }
 
-    // XXX stub impl
     fn partial_fill(
         &self,
         vars: impl Context + Listable + Clone,

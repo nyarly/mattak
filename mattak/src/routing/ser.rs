@@ -1,4 +1,5 @@
 use std::{
+    str,
     collections::{hash_map, HashMap},
     fmt::Display,
     rc::Rc,
@@ -494,10 +495,10 @@ fn to_hex_digit(digit: u8) -> u8 {
     }
 }
 
-pub(super) fn fill_template(parsed: Parsed, context: impl Serialize) -> Result<String, Error> {
+pub fn fill(parsed: &Parsed, policy: FillPolicy, context: impl Serialize) -> Result<String, Error> {
     let mut serializer = Serializer {
         template: parsed.clone(),
-        policy: FillPolicy::Strict,
+        policy,
     };
     context.serialize(&mut serializer)
 }

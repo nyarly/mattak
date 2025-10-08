@@ -68,6 +68,8 @@ pub enum Error {
     Header(#[from] axum_extra::typed_header::TypedHeaderRejection),
     #[error("input invalid: {0}")]
     InvalidInput(String),
+    #[error("filling URI template")]
+    URITemplating(#[from] routing::UriSerializationError),
 }
 
 impl IntoResponse for Error {
@@ -123,7 +125,8 @@ impl IntoResponse for Error {
             | Error::MissingCaptures(_)
             | Error::NoMatch(_)
             | Error::Parsing(_)
-            | Error::RegexParse(_) => {
+            | Error::RegexParse(_)
+            | Error::URITemplating(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
             }
         }
