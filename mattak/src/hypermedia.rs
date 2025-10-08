@@ -1,27 +1,26 @@
 use axum::http;
-use iri_string::template::{Context, UriTemplateString};
-use serde::Serialize;
+use iri_string::template::UriTemplateString;
 pub use iri_string::types::IriReferenceString;
+use serde::Serialize;
 
-use crate::{error::Error, routing::{self, Listable}};
+use crate::{error::Error, routing};
 
 #[derive(Serialize, Clone)]
-#[serde(tag="type")]
+#[serde(tag = "type")]
 pub struct IriTemplate {
     pub id: IriReferenceString,
     // pub r#type: String,
     pub template: UriTemplateString,
-    pub operation: Vec<Operation>
+    pub operation: Vec<Operation>,
 }
 
 #[derive(Serialize, Clone)]
-#[serde(tag="type")]
+#[serde(tag = "type")]
 pub struct Link {
     pub id: IriReferenceString,
     // pub r#type: String,
-    pub operation: Vec<Operation>
+    pub operation: Vec<Operation>,
 }
-
 
 #[derive(Default, Serialize, Clone)]
 pub struct Operation {
@@ -39,8 +38,7 @@ impl From<http::Method> for Method {
 }
 
 impl Serialize for Method {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.0.as_str())
     }
 }
@@ -201,37 +199,37 @@ UpdateAction
 
 /// op is used to create a most-common operation for each action type
 pub fn op(action: ActionType) -> Operation {
-    use ActionType::*;
     use axum::http::Method;
+    use ActionType::*;
     match action {
         View => Operation {
             method: Method::GET.into(),
-            r#type: action.to_string()
+            r#type: action.to_string(),
         },
-        Create => Operation{
+        Create => Operation {
             method: Method::PUT.into(),
-            r#type: action.to_string()
+            r#type: action.to_string(),
         },
-        Update => Operation{
+        Update => Operation {
             method: Method::PUT.into(),
-            r#type: action.to_string()
+            r#type: action.to_string(),
         },
-        Find => Operation{
+        Find => Operation {
             method: Method::GET.into(),
-            r#type: action.to_string()
+            r#type: action.to_string(),
         },
-        Add => Operation{
+        Add => Operation {
             method: Method::POST.into(),
-            r#type: action.to_string()
+            r#type: action.to_string(),
         },
-        Login => Operation{
+        Login => Operation {
             method: Method::POST.into(),
-            r#type: action.to_string()
+            r#type: action.to_string(),
         },
-        Logout => Operation{
+        Logout => Operation {
             method: Method::DELETE.into(),
-            r#type: action.to_string()
-        }
+            r#type: action.to_string(),
+        },
     }
 }
 
@@ -252,15 +250,20 @@ pub struct ResourceFields<L: Serialize + Clone> {
     pub r#type: ResourceType,
     pub operation: Vec<Operation>,
     pub find_me: IriTemplate,
-    pub nick: L
+    pub nick: L,
 }
 
-impl<L: Serialize + Clone + Listable + Context> ResourceFields<L> {
-    pub fn new(route: &routing::Entry, nick: L, api_name: &str, operation: Vec<Operation>) -> Result<Self, Error> {
-        let id = route.fill(nick.clone())?;
+impl<L: Serialize + Clone + Serialize> ResourceFields<L> {
+    pub fn new(
+        route: &routing::Entry,
+        nick: L,
+        api_name: &str,
+        operation: Vec<Operation>,
+    ) -> Result<Self, Error> {
+        let id = route.serialize(routing::FillPolicy::Strict, nick.clone())?;
         let template = route.template()?;
 
-        Ok(Self{
+        Ok(Self {
             id,
             nick,
             operation,
@@ -268,7 +271,7 @@ impl<L: Serialize + Clone + Listable + Context> ResourceFields<L> {
             find_me: IriTemplate {
                 template,
                 id: api_name.try_into()?,
-                operation: vec![ op(ActionType::Find) ]
+                operation: vec![op(ActionType::Find)],
             },
         })
     }

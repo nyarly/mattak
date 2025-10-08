@@ -299,11 +299,10 @@ fn parsed_template_vars(parsed: &Parsed) -> Vec<Rc<str>> {
 //   Need to emit (capture,varname) - usually (x,x) but sometimes (x,x_p3)
 fn path_scalar_names(parsed: &Parsed) -> HashMap<Rc<str>, Rc<str>> {
     let mut result = HashMap::new();
-    use Part::*;
     for part in parsed.nonquery_parts_iter() {
-        match part {
+        match part.expression() {
             // PATH
-            SegRest(exp) | SegPathRest(exp) | SegVar(exp) | SegPathVar(exp) => {
+            Some(exp) => {
                 for v in &exp.varspecs {
                     match v.modifier {
                         VarMod::None => {
@@ -318,76 +317,61 @@ fn path_scalar_names(parsed: &Parsed) -> HashMap<Rc<str>, Rc<str>> {
                     }
                 }
             }
-            _ => (),
+            None => (),
         }
     }
     result
 }
 //   * Parser Query Scalar names
 fn query_scalar_names(parsed: &Parsed) -> HashSet<&str> {
-    use Part::*;
     parsed
         .query_parts_iter()
-        .filter_map(|part| match part {
-            // QUERY
-            SegRest(exp) | SegPathRest(exp) | SegVar(exp) | SegPathVar(exp) => {
-                Some(
-                    exp.varspecs
-                        .iter()
-                        .filter_map(|v| match v.modifier {
-                            VarMod::None | VarMod::Prefix(_) => Some(v.varname.as_str()), // SCALAR
-                            _ => None,
-                        })
-                        .collect::<Vec<&str>>(),
-                )
-            }
-            _ => None,
+        .filter_map(|part| {
+            part.expression().map(|exp| {
+                exp.varspecs
+                    .iter()
+                    .filter_map(|v| match v.modifier {
+                        VarMod::None | VarMod::Prefix(_) => Some(v.varname.as_str()), // SCALAR
+                        _ => None,
+                    })
+                    .collect::<Vec<&str>>()
+            })
         })
         .flatten()
         .collect()
 }
 //   * Parser Path Explode names - might need the joiner in order to split them
 fn path_explode_names(parsed: &Parsed) -> Vec<(&str, &str)> {
-    use Part::*;
     parsed
         .nonquery_parts_iter()
-        .filter_map(|part| match part {
-            // PATH
-            SegRest(exp) | SegPathRest(exp) | SegVar(exp) | SegPathVar(exp) => {
-                Some(
-                    exp.varspecs
-                        .iter()
-                        .filter_map(|v| match v.modifier {
-                            VarMod::Explode => Some((exp.operator.separator(), v.varname.as_str())), // EXPLODE
-                            _ => None,
-                        })
-                        .collect::<Vec<(&str, &str)>>(),
-                )
-            }
-            _ => None,
+        .filter_map(|part| {
+            part.expression().map(|exp| {
+                exp.varspecs
+                    .iter()
+                    .filter_map(|v| match v.modifier {
+                        VarMod::Explode => Some((exp.operator.separator(), v.varname.as_str())), // EXPLODE
+                        _ => None,
+                    })
+                    .collect::<Vec<(&str, &str)>>()
+            })
         })
         .flatten()
         .collect()
 }
 //   * Parser Query Explode names
 fn query_explode_names(parsed: &Parsed) -> HashSet<&str> {
-    use Part::*;
     parsed
         .query_parts_iter()
-        .filter_map(|part| match part {
-            // QUERY
-            SegRest(exp) | SegPathRest(exp) | SegVar(exp) | SegPathVar(exp) => {
-                Some(
-                    exp.varspecs
-                        .iter()
-                        .filter_map(|v| match v.modifier {
-                            VarMod::Explode => Some(v.varname.as_str()), // EXPLODE
-                            _ => None,
-                        })
-                        .collect::<Vec<&str>>(),
-                )
-            }
-            _ => None,
+        .filter_map(|part| {
+            part.expression().map(|exp| {
+                exp.varspecs
+                    .iter()
+                    .filter_map(|v| match v.modifier {
+                        VarMod::Explode => Some(v.varname.as_str()), // EXPLODE
+                        _ => None,
+                    })
+                    .collect::<Vec<&str>>()
+            })
         })
         .flatten()
         .collect()
@@ -526,6 +510,7 @@ impl UriDeserializer {
 
         let query_parse = match (parsed.query.is_some(), uri.query()) {
             (false, None) |
+            // XXX consider: optional queries - should we make you get(var) from a HashMap?
             (false, Some(_)) | // XXX Error? (if you want to accept abitrary queries, {?ignored*}
             (true,  None) => form_urlencoded::parse(&[]),
             (true, Some(q)) => form_urlencoded::parse(q.as_bytes()),
@@ -1360,6 +1345,8 @@ enum KeyOrIdx {
 
 #[cfg(test)]
 mod tests {
+    use crate::routing::RouteTemplateString;
+
     use super::*;
     use serde::Deserialize;
     use std::collections::HashMap;
@@ -1407,6 +1394,21 @@ mod tests {
                 assert_eq!(<$ty>::deserialize(deserializer).unwrap(), $value);
             }
         };
+    }
+
+    #[test]
+    fn test_real_search_template() {
+        //let rt = RouteTemplateString("/search{?query,kind}".into(), vec![]);
+        let rt = RouteTemplateString("/search{?query}".into(), vec![]);
+
+        let cfg = crate::routing::route_config(rt);
+        let uri = hyper::Uri::from_static("http://example.com/search?query=test");
+        let search: HashMap<String, String> =
+            crate::routing::Entry::from_uri(&cfg, uri.clone()).expect("deserialize");
+        assert_eq!(
+            "test",
+            search.get("query").expect("query to be deserialized")
+        );
     }
 
     #[test]

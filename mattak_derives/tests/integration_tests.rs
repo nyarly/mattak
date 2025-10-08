@@ -106,3 +106,19 @@ fn smoke_context() {
         "xxx-".to_string()
     );
 }
+
+#[derive(Route, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[template("/search{?query,kind}")]
+pub(crate) struct Search {
+    query: String,
+    kind: String,
+}
+
+#[test]
+fn live_route_derive() {
+    //R::route_template().prefixed(self.nested_path.as_str())
+    let rt = Search::route_template();
+    let cfg = mattak::routing::route_config(rt);
+    let uri = hyper::Uri::from_static("http://example.com/search?query=test");
+    let _search: Search = mattak::routing::Entry::from_uri(&cfg, uri.clone()).expect("deserialize");
+}

@@ -10,14 +10,18 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     error,
-    routing::{route_config, Route},
+    routing::{route_config, Entry, Route, RouteTemplate as _},
 };
-
-pub struct CanonicalUri(Uri);
 
 pub struct NestedRoute<R: Route> {
     pub nested_path: NestedPath,
-    pub route: R,
+    pub nick: R,
+}
+
+impl<R: Route> NestedRoute<R> {
+    pub fn entry(&self) -> Entry {
+        R::route_template().prefixed(self.nested_path.as_str())
+    }
 }
 
 impl<R, S> FromRequestParts<S> for NestedRoute<R>
@@ -61,13 +65,24 @@ where
     let cfg = route_config(rt);
     let route = cfg.from_uri(parts.uri.clone())?;
 
-    Ok(NestedRoute { nested_path, route })
+    Ok(NestedRoute {
+        nested_path,
+        nick: route,
+    })
 }
+
+pub struct CanonicalUri(Uri);
 
 pub struct CanonRoute<R: Route> {
     pub uri: Uri,
     pub nested_path: NestedPath,
-    pub route: R,
+    pub nick: R,
+}
+
+impl<R: Route> CanonRoute<R> {
+    pub fn entry(&self) -> Entry {
+        R::route_template().prefixed(self.nested_path.as_str())
+    }
 }
 
 impl<R, S> FromRequestParts<S> for CanonRoute<R>
@@ -76,7 +91,7 @@ where
     CanonicalUri: FromRef<S>,
     S: Send + Sync,
 {
-    /// If the extractor fails it\'ll use this "rejection" type. A rejection is
+    /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
     type Rejection = Rejection;
 
@@ -118,7 +133,7 @@ where
     Ok(CanonRoute {
         uri,
         nested_path,
-        route,
+        nick: route,
     })
 }
 
