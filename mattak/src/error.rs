@@ -70,6 +70,8 @@ pub enum Error {
     InvalidInput(String),
     #[error("filling URI template")]
     URITemplating(#[from] routing::UriSerializationError),
+    #[error("parse annotation error: {0}")]
+    ParseAnnotation(#[from] routing::ParserError),
 }
 
 impl IntoResponse for Error {
@@ -126,7 +128,8 @@ impl IntoResponse for Error {
             | Error::NoMatch(_)
             | Error::Parsing(_)
             | Error::RegexParse(_)
-            | Error::URITemplating(_) => {
+            | Error::URITemplating(_)
+            | Error::ParseAnnotation(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
             }
         }

@@ -145,7 +145,16 @@ pub(super) struct Parsed {
     pub(super) auth: Option<Vec<Part>>,
     pub(super) path: Vec<Part>,
     pub(super) query: Option<Vec<Part>>,
-    pub(super) assocs: Vec<String>,
+    pub(super) path_assoc: Option<String>,
+    pub(super) query_assoc: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("assoc provided for {1}, but {0} is already a path assoc")]
+    ExtraPathAssoc(String, String),
+    #[error("assoc provided for {1}, but {0} is already a query assoc")]
+    ExtraQueryAssoc(String, String),
 }
 
 impl Parsed {
@@ -162,14 +171,61 @@ impl Parsed {
     pub(super) fn query_parts_iter(&self) -> impl Iterator<Item = &Part> {
         self.query.iter().flatten()
     }
-    pub(super) fn annotate_assocs(&mut self, assocs: impl IntoIterator<Item = String>) {
-        self.assocs = assocs.into_iter().collect();
+    pub(super) fn annotate_assocs(
+        &mut self,
+        assocs: impl IntoIterator<Item = String>,
+    ) -> Result<(), Error> {
+        let mut path_assoc: Option<String> = None;
+        let mut query_assoc: Option<String> = None;
+        for _assoc in assocs {
+            for part in self.nonquery_parts_iter() {
+                if let Some(expr) = part.expression() {
+                    for varspec in expr.varspecs.iter() {
+                        match varspec {
+                            VarSpec {
+                                varname: assoc,
+                                modifier: VarMod::Explode,
+                            } => match path_assoc {
+                                Some(ref name) => {
+                                    return Err(Error::ExtraPathAssoc(name.clone(), assoc.clone()))
+                                }
+                                None => path_assoc = Some(assoc.clone()),
+                            },
+                            _ => (),
+                        }
+                    }
+                }
+            }
+            for part in self.query_parts_iter() {
+                if let Some(expr) = part.expression() {
+                    for varspec in expr.varspecs.iter() {
+                        match varspec {
+                            VarSpec {
+                                varname: assoc,
+                                modifier: VarMod::Explode,
+                            } => match query_assoc {
+                                Some(ref name) => {
+                                    return Err(Error::ExtraQueryAssoc(name.clone(), assoc.clone()))
+                                }
+                                None => query_assoc = Some(assoc.clone()),
+                            },
+                            _ => (),
+                        }
+                    }
+                }
+            }
+        }
+        self.path_assoc = path_assoc;
+        self.query_assoc = query_assoc;
+        Ok(())
     }
-    // XXX Big assumption here that there's either zero or one assoc annotation,
-    // and that the only assoc is {?like_this*}
-    // When we consider support for path assocs, this'll be confusing.
+
+    pub(super) fn path_assoc_name(&self) -> Option<Rc<str>> {
+        self.path_assoc.as_ref().map(|a| a.clone().into())
+    }
+
     pub(super) fn query_assoc_name(&self) -> Option<Rc<str>> {
-        self.assocs.iter().map(|a| a.clone().into()).next()
+        self.query_assoc.as_ref().map(|a| a.clone().into())
     }
 }
 
@@ -285,7 +341,8 @@ pub(super) fn parse(base: &str) -> Result<Parsed, nom::Err<NomError<'_>>> {
         auth,
         path,
         query,
-        assocs: vec![],
+        path_assoc: None,
+        query_assoc: None,
     })
 }
 
@@ -715,7 +772,8 @@ mod test {
                         }
                     ]
                 })]),
-                assocs: vec![]
+                path_assoc: None,
+                query_assoc: None,
             })
         );
         let input = "/user/{user_id}{?something,mysterious}";

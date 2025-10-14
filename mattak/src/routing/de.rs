@@ -6,10 +6,12 @@ use serde::{
 };
 use std::{
     any::type_name,
+    borrow::Cow,
     collections::{HashMap, HashSet, VecDeque},
     fmt,
     rc::Rc,
 };
+use tracing::trace;
 
 use crate::{
     error,
@@ -35,6 +37,13 @@ impl UriDeserializationError {
     pub(super) fn wrong_number_of_parameters(got: usize, expected: usize) -> Self {
         Self {
             kind: ErrorKind::WrongNumberOfParameters { got, expected },
+        }
+    }
+
+    pub(super) fn cant_fill_parameters<T>(varlist: Vec<(Rc<str>, T)>, expected: usize) -> Self {
+        let got = varlist.iter().map(|(name, _)| name.clone()).collect();
+        Self {
+            kind: ErrorKind::CantFillParameters { got, expected },
         }
     }
 
@@ -78,6 +87,12 @@ pub enum ErrorKind {
         /// The number of actual parameters in the URI.
         got: usize,
         /// The number of expected parameters.
+        expected: usize,
+    },
+
+    // The receiving variable can't hold the variables in the template
+    CantFillParameters {
+        got: Vec<Rc<str>>,
         expected: usize,
     },
 
@@ -140,6 +155,19 @@ impl fmt::Display for ErrorKind {
                 write!(
                     f,
                     "Wrong number of path arguments for `Path`. Expected {expected} but got {got}"
+                )?;
+
+                if *expected == 1 {
+                    write!(f, ". Note that multiple parameters must be extracted with a tuple `Path<(_, _)>` or a struct `Path<YourParams>`")?;
+                }
+
+                Ok(())
+            }
+            ErrorKind::CantFillParameters { got, expected } => {
+                let count = got.len();
+                write!(
+                    f,
+                    "Wrong number of path arguments for `Path`. Variables {got:?}({count}) but expected {expected}"
                 )?;
 
                 if *expected == 1 {
@@ -225,13 +253,107 @@ macro_rules! parse_single_value {
                 };
                 visitor.$visit_fn(value)
             } else {
-                return Err(UriDeserializationError::wrong_number_of_parameters(
-                    self.varlist.len(),
+                return Err(UriDeserializationError::cant_fill_parameters(
+                    self.varlist,
                     1,
                 ));
             }
         }
     };
+}
+
+/// Convert a byte string in the `application/x-www-form-urlencoded` syntax
+/// into a iterator of (name, value) pairs.
+///
+/// Use `parse(input.as_bytes())` to parse a `&str` string.
+///
+/// The names and values are percent-decoded. For instance, `%23first=%25try%25` will be
+/// converted to `[("#first", "%try%")]`.
+///
+/// Gratefully lifted from form_urlencoded, because we needed to add path parameter parsing as well
+#[inline]
+pub fn parse(sep: u8, input: &[u8]) -> Parse<'_> {
+    Parse { sep, input }
+}
+/// The return type of `parse()`.
+#[derive(Copy, Clone)]
+pub struct Parse<'a> {
+    sep: u8,
+    input: &'a [u8],
+}
+
+impl<'a> Iterator for Parse<'a> {
+    type Item = (Cow<'a, str>, Cow<'a, str>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.input.is_empty() {
+                return None;
+            }
+            let mut split2 = self.input.splitn(2, |&b| b == self.sep);
+            let sequence = split2.next().unwrap();
+            self.input = split2.next().unwrap_or(&[][..]);
+            if sequence.is_empty() {
+                continue;
+            }
+            let mut split2 = sequence.splitn(2, |&b| b == b'=');
+            let name = split2.next().unwrap();
+            let value = split2.next().unwrap_or(&[][..]);
+            return Some((decode(name), decode(value)));
+        }
+    }
+}
+
+fn decode(input: &[u8]) -> Cow<'_, str> {
+    let replaced = replace_plus(input);
+    decode_utf8_lossy(match percent_encoding::percent_decode(&replaced).into() {
+        Cow::Owned(vec) => Cow::Owned(vec),
+        Cow::Borrowed(_) => replaced,
+    })
+}
+
+fn decode_utf8_lossy(input: Cow<'_, [u8]>) -> Cow<'_, str> {
+    // Note: This function is duplicated in `form_urlencoded/src/query_encoding.rs`.
+    match input {
+        Cow::Borrowed(bytes) => String::from_utf8_lossy(bytes),
+        Cow::Owned(bytes) => {
+            match String::from_utf8_lossy(&bytes) {
+                Cow::Borrowed(utf8) => {
+                    // If from_utf8_lossy returns a Cow::Borrowed, then we can
+                    // be sure our original bytes were valid UTF-8. This is because
+                    // if the bytes were invalid UTF-8 from_utf8_lossy would have
+                    // to allocate a new owned string to back the Cow so it could
+                    // replace invalid bytes with a placeholder.
+
+                    // First we do a debug_assert to confirm our description above.
+                    let raw_utf8: *const [u8] = utf8.as_bytes();
+                    debug_assert!(core::ptr::eq(raw_utf8, &*bytes));
+
+                    // Given we know the original input bytes are valid UTF-8,
+                    // and we have ownership of those bytes, we re-use them and
+                    // return a Cow::Owned here.
+                    Cow::Owned(unsafe { String::from_utf8_unchecked(bytes) })
+                }
+                Cow::Owned(s) => Cow::Owned(s),
+            }
+        }
+    }
+}
+/// Replace b'+' with b' '
+fn replace_plus(input: &[u8]) -> Cow<'_, [u8]> {
+    match input.iter().position(|&b| b == b'+') {
+        None => Cow::Borrowed(input),
+        Some(first_position) => {
+            let mut replaced = input.to_owned();
+            replaced[first_position] = b' ';
+            for byte in &mut replaced[first_position + 1..] {
+                if *byte == b'+' {
+                    *byte = b' ';
+                }
+            }
+            Cow::Owned(replaced)
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -269,7 +391,7 @@ impl VarBinding {
                 .collect::<Vec<_>>()
                 .join(sep)
                 .into()),
-            VarBinding::Empty => Err(UriDeserializationError::wrong_number_of_parameters(0, 1)),
+            VarBinding::Empty => Ok("".into()),
         }
     }
 }
@@ -376,6 +498,7 @@ fn query_explode_names(parsed: &Parsed) -> HashSet<&str> {
         .flatten()
         .collect()
 }
+
 impl UriDeserializer {
     // XXX &Uri?
     //  Principle: RFC 6570 is the upper limit on features we support. We have to constrain
@@ -485,17 +608,24 @@ impl UriDeserializer {
     ///
     /// # Errors
     ///
-    /// This function will return an error if
+    /// This function will return an error if a valid context for deserialization
+    /// can't be extracted from the URI
     pub(crate) fn for_uri(
         uri: &Uri,
         parsed: &Parsed,
         regex: &Regex,
     ) -> Result<UriDeserializer, error::Error> {
+        trace!("Setting up to deserialize {uri:?} via {parsed:?}");
+        // Scalar values, regardless of source
         let mut scalars: HashMap<Rc<str>, Rc<str>> = HashMap::new();
+        // Explodes from the path
         let mut path_explodes: HashMap<Rc<str>, (Rc<str>, Rc<str>)> = HashMap::new();
+        // Explodes from the query
         let mut query_explodes: HashMap<Rc<str>, Vec<Rc<str>>> = HashMap::new();
+        // Assoc explodes
         let mut assocs: HashMap<Rc<str>, Vec<(Rc<str>, Rc<str>)>> = HashMap::new();
-        // definitely considering a secondary Nom parser instead of RE here.
+
+        // Extract values from the URI path (and possibly scheme/auth)
         let path = uri.path();
         let url = match (uri.scheme_str(), uri.authority().map(|a| a.as_str())) {
             (Some(scheme), Some(auth)) => &format!("{scheme}://{auth}{path}"),
@@ -504,18 +634,9 @@ impl UriDeserializer {
             (None, None) => path,
         };
 
-        let caps = regex
-            .captures(url)
-            .ok_or_else(|| error::Error::NoMatch(url.to_string()))?;
-
-        let query_parse = match (parsed.query.is_some(), uri.query()) {
-            (false, None) |
-            // XXX consider: optional queries - should we make you get(var) from a HashMap?
-            (false, Some(_)) | // XXX Error? (if you want to accept abitrary queries, {?ignored*}
-            (true,  None) => form_urlencoded::parse(&[]),
-            (true, Some(q)) => form_urlencoded::parse(q.as_bytes()),
-        };
-
+        // Local lambda to capture scalars
+        // Key concern is that prefixed values have to match up properly
+        // i/o/w /{foo:3}/{foo} -> /exa/example, not /zzz/yyyyyyy
         let mut new_scalar = |var_name: Rc<str>, m: Rc<str>| -> Result<(), error::Error> {
             if let Some(new_val) = percent_decode(m) {
                 if let Some(val) = scalars.get(&var_name) {
@@ -543,12 +664,27 @@ impl UriDeserializer {
             Ok(())
         };
 
+        // definitely considering a secondary Nom parser instead of RE here.
+        let caps = dbg!(regex)
+            .captures(url)
+            .ok_or_else(|| error::Error::NoMatch(url.to_string()))?;
+
+        // Extract values from the URI query
+        let query_parse = match (parsed.query.is_some(), uri.query()) {
+            (false, None) |
+            // XXX consider: optional queries - should we make you get(var) from a HashMap?
+            (false, Some(_)) | // XXX Error? (if you want to accept abitrary queries, {?ignored*}
+            (true,  None) => parse(b'&', &[]),
+            (true, Some(q)) => parse(b'&', q.as_bytes()),
+        };
+
         let query_scalar_names = query_scalar_names(parsed);
         let query_explode_names = query_explode_names(parsed);
         let mut query_assocs: Vec<(Rc<str>, Rc<str>)> = vec![];
         for (cow_var_name, cow_value) in query_parse {
             let var_name: Rc<str> = cow_var_name.into_owned().into();
             let value: Rc<str> = cow_value.into_owned().into();
+            (var_name.clone(), value.clone());
 
             if query_scalar_names.contains(var_name.as_ref()) {
                 new_scalar(var_name, value)?
@@ -572,12 +708,13 @@ impl UriDeserializer {
 
         if let Some(name) = parsed.query_assoc_name() {
             assocs.insert(name, query_assocs.clone());
-        } else if query_assocs.len() > 0 {
+        } else if (&query_assocs).len() > 0 {
             return Err(error::Error::UnexpectedVariables(
                 query_assocs.iter().map(|(k, _)| k.to_string()).collect(),
             ));
         }
 
+        let mut path_assocs: Vec<(Rc<str>, Rc<str>)> = vec![];
         let names = path_scalar_names(parsed);
         for (var_name, re_name) in names {
             if let Some(m) = caps.name(&re_name) {
@@ -586,10 +723,29 @@ impl UriDeserializer {
         }
         for (sep, var_name) in path_explode_names(parsed) {
             if let Some(m) = caps.name(&var_name) {
-                if let Some(dec) = percent_decode(m.as_str()) {
-                    path_explodes.insert(var_name.into(), (sep.into(), dec));
+                if Some(var_name) == parsed.path_assoc_name().as_deref() {
+                    let path_parse = parse(
+                        // XXX ick
+                        sep.bytes().nth(0).expect("seps to be single byte strings"),
+                        m.as_str().as_bytes(),
+                    );
+                    path_assocs = path_parse
+                        .map(|(k, v)| (k.into_owned().into(), v.into_owned().into()))
+                        .collect();
+                } else {
+                    if let Some(dec) = percent_decode(m.as_str()) {
+                        path_explodes.insert(var_name.into(), (sep.into(), dec));
+                    }
                 }
             }
+        }
+
+        if let Some(name) = parsed.path_assoc_name() {
+            assocs.insert(name, path_assocs.clone());
+        } else if (&path_assocs).len() > 0 {
+            return Err(error::Error::UnexpectedVariables(
+                path_assocs.iter().map(|(k, _)| k.to_string()).collect(),
+            ));
         }
 
         let varlist = parsed_template_vars(parsed)
@@ -645,8 +801,12 @@ impl UriDeserializer {
                         Ok((vname.clone(), VarBinding::Assoc("?".into(), assoc.clone())))
                     }
                     (None, None, None, None) => Ok((vname.clone(), VarBinding::Empty)),
-                    (None, None, Some(_), Some(_)) => {
-                        Err(error::Error::UnexpectedVariables(vec![vname.to_string()]))
+                    (None, None, Some(q), Some(assoc)) => {
+                        if q.len() > 0 {
+                            Err(error::Error::UnexpectedVariables(vec![vname.to_string()]))
+                        } else {
+                            Ok((vname.clone(), VarBinding::Assoc("?".into(), assoc.clone())))
+                        }
                     }
                     (Some(_), Some(_), _, _) => {
                         panic!("scalar and path explode should be caught in template parse")
@@ -714,8 +874,8 @@ impl<'de> Deserializer<'de> for UriDeserializer {
         if let [(_, binding)] = self.varlist.as_slice() {
             visitor.visit_str(&binding.to_str()?)
         } else {
-            return Err(UriDeserializationError::wrong_number_of_parameters(
-                self.varlist.len(),
+            return Err(UriDeserializationError::cant_fill_parameters(
+                self.varlist,
                 1,
             ));
         }
@@ -805,8 +965,8 @@ impl<'de> Deserializer<'de> for UriDeserializer {
             }
             _ => {
                 if self.varlist.len() < len {
-                    return Err(UriDeserializationError::wrong_number_of_parameters(
-                        self.varlist.len(),
+                    return Err(UriDeserializationError::cant_fill_parameters(
+                        self.varlist,
                         len,
                     ));
                 }
@@ -873,8 +1033,8 @@ impl<'de> Deserializer<'de> for UriDeserializer {
                 ))
             }
             _ => {
-                return Err(UriDeserializationError::wrong_number_of_parameters(
-                    self.varlist.len(),
+                return Err(UriDeserializationError::cant_fill_parameters(
+                    self.varlist,
                     1,
                 ))
             }
@@ -1396,10 +1556,13 @@ mod tests {
         };
     }
 
+    // XXX A template with an explode modified variable
+    //    * either is "filled" is a list
+    //    * or filled with a map, and the variable is tagged as assoc.
     #[test]
     fn test_real_search_template() {
         //let rt = RouteTemplateString("/search{?query,kind}".into(), vec![]);
-        let rt = RouteTemplateString("/search{?query}".into(), vec![]);
+        let rt = RouteTemplateString("/search{?query,extra*}".into(), vec!["extra".into()]);
 
         let cfg = crate::routing::route_config(rt);
         let uri = hyper::Uri::from_static("http://example.com/search?query=test");
@@ -1409,6 +1572,78 @@ mod tests {
             "test",
             search.get("query").expect("query to be deserialized")
         );
+        let uri = hyper::Uri::from_static("http://example.com/search?query=test&kind=boardgame");
+        let search: HashMap<String, String> =
+            crate::routing::Entry::from_uri(&cfg, uri.clone()).expect("deserialize");
+        assert_eq!(
+            "test",
+            search.get("query").expect("query to be deserialized")
+        );
+        assert_eq!(
+            "kind=boardgame",
+            search.get("extra").expect("kind to be deserialized")
+        )
+    }
+
+    #[test]
+    fn test_path_style_parameter() {
+        let rt = RouteTemplateString("/search/{;query,extra*}".into(), vec!["extra".into()]);
+        let cfg = crate::routing::route_config(rt);
+        let uri = hyper::Uri::from_static("http://example.com/search/;query=test;kind=boardgame");
+        let search: HashMap<String, String> =
+            crate::routing::Entry::from_uri(&cfg, uri.clone()).expect("deserialize");
+        assert_eq!(
+            "test",
+            dbg!(&search)
+                .get("query")
+                .expect("query to be deserialized")
+        );
+        assert_eq!(
+            "kind=boardgame",
+            search.get("extra").expect("kind to be deserialized")
+        );
+        #[derive(Deserialize, Debug)]
+        struct Search {
+            query: String,
+            extra: HashMap<String, String>,
+        }
+        let search_struct: Search =
+            crate::routing::Entry::from_uri(&cfg, uri.clone()).expect("deserialize");
+        assert_eq!("test", dbg!(&search_struct).query);
+        assert_eq!(
+            "boardgame",
+            search_struct
+                .extra
+                .get("kind")
+                .expect("kind to be deserialized")
+        )
+    }
+
+    #[test]
+    fn test_path_segment_assoc() {
+        let rt = RouteTemplateString("/search{/extra*}".into(), vec!["extra".into()]);
+        let cfg = crate::routing::route_config(rt);
+        let uri = hyper::Uri::from_static("http://example.com/search/query=test/kind=boardgame");
+        #[derive(Deserialize, Debug)]
+        struct Search {
+            extra: HashMap<String, String>,
+        }
+        let search_struct: Search =
+            crate::routing::Entry::from_uri(&cfg, uri.clone()).expect("deserialize");
+        assert_eq!(
+            search_struct
+                .extra
+                .get("query")
+                .expect("kind to be deserialized"),
+            "test"
+        );
+        assert_eq!(
+            search_struct
+                .extra
+                .get("kind")
+                .expect("kind to be deserialized"),
+            "boardgame"
+        )
     }
 
     #[test]
@@ -1456,13 +1691,13 @@ mod tests {
         })
         .unwrap_err()
         .kind;
-        assert!(matches!(
+        assert_eq!(
             error_kind,
-            ErrorKind::WrongNumberOfParameters {
+            ErrorKind::CantFillParameters {
+                got: vec!["a".into(), "b".into()],
                 expected: 1,
-                got: 2
             }
-        ));
+        );
     }
 
     #[test]
@@ -1655,8 +1890,8 @@ mod tests {
         test_parse_error!(
             vec![("a", "1")],
             (u32, u32),
-            ErrorKind::WrongNumberOfParameters {
-                got: 1,
+            ErrorKind::CantFillParameters {
+                got: vec!["a".into()],
                 expected: 2,
             }
         );

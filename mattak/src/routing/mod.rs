@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Debug,
     hash::Hash,
     sync::{Arc, Mutex, OnceLock, RwLock},
 };
@@ -30,6 +31,7 @@ mod parser;
 mod render;
 mod ser;
 pub use de::UriDeserializationError;
+pub use parser::Error as ParserError;
 pub use ser::Error as UriSerializationError;
 
 pub use iri_string::template::context;
@@ -64,7 +66,7 @@ pub trait Route {
     fn route_template() -> RouteTemplateString;
 }
 
-pub trait RouteTemplate: Clone + Hash + Send + Sync + Eq
+pub trait RouteTemplate: Debug + Clone + Hash + Send + Sync + Eq
 where
     Self: 'static,
 {
@@ -92,7 +94,7 @@ impl<RT: RouteTemplate + 'static> typemap_ors::Key for RTKey<RT> {
     type Value = Arc<Mutex<Map<RT>>>;
 }
 
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct RouteTemplateString(pub String, pub Vec<String>);
 
 impl RouteTemplate for RouteTemplateString {
@@ -136,7 +138,8 @@ fn the_map<RT: RouteTemplate + 'static>() -> Arc<Mutex<Map<RT>>> {
 fn parsed<RT: RouteTemplate>(rt: RT) -> Result<Parsed, Error> {
     let mut parsed =
         parser::parse(&rt.route_template()).map_err(|e| Error::Parsing(format!("{:?}", e)))?;
-    parsed.annotate_assocs(rt.assoc_fields());
+    parsed.annotate_assocs(rt.assoc_fields())?;
+    trace!("Parsed {rt:?} into {parsed:?}");
     Ok(parsed)
 }
 

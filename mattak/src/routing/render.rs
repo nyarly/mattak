@@ -139,7 +139,7 @@ fn var_re(op: Op, here: &'static str, nxt: &'static str) -> impl Fn(&VarSpec) ->
         match (op, varspec.modifier) {
             // Query and QueryCont would also need "varname=" but! not allowed in the path
             (Op::PathParam, VarMod::None) =>
-            format!("(?<{var}>{var}{join}[^{here}{nxt}{sep}]*)"),
+            format!("{var}{join}(?<{var}>[^{here}{nxt}{sep}]*)"),
 
             (Op::PathParam, VarMod::Prefix(count)) =>
             format!("(?<{var}_p{count}>{var}{join}(?:[^{here}{nxt}%{sep}]|%[A-Fa-f0-9]{{2}}|%%){{0,{count}}})"),
