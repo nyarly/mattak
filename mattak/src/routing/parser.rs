@@ -155,6 +155,8 @@ pub enum Error {
     ExtraPathAssoc(String, String),
     #[error("assoc provided for {1}, but {0} is already a query assoc")]
     ExtraQueryAssoc(String, String),
+    #[error("assoc provided: {0} which doesn't match any exploding variables in the template")]
+    NonExplodeAssoc(String),
 }
 
 impl Parsed {
@@ -177,19 +179,23 @@ impl Parsed {
     ) -> Result<(), Error> {
         let mut path_assoc: Option<String> = None;
         let mut query_assoc: Option<String> = None;
-        for _assoc in assocs {
+        for asc in assocs {
+            let mut matched = false;
             for part in self.nonquery_parts_iter() {
                 if let Some(expr) = part.expression() {
                     for varspec in expr.varspecs.iter() {
                         match varspec {
                             VarSpec {
-                                varname: assoc,
+                                varname: vn,
                                 modifier: VarMod::Explode,
-                            } => match path_assoc {
+                            } if *vn == asc => match path_assoc {
                                 Some(ref name) => {
-                                    return Err(Error::ExtraPathAssoc(name.clone(), assoc.clone()))
+                                    return Err(Error::ExtraPathAssoc(name.clone(), asc.clone()))
                                 }
-                                None => path_assoc = Some(assoc.clone()),
+                                None => {
+                                    matched = true;
+                                    path_assoc = Some(asc.clone())
+                                }
                             },
                             _ => (),
                         }
@@ -201,18 +207,24 @@ impl Parsed {
                     for varspec in expr.varspecs.iter() {
                         match varspec {
                             VarSpec {
-                                varname: assoc,
+                                varname: vn,
                                 modifier: VarMod::Explode,
-                            } => match query_assoc {
+                            } if *vn == asc => match query_assoc {
                                 Some(ref name) => {
-                                    return Err(Error::ExtraQueryAssoc(name.clone(), assoc.clone()))
+                                    return Err(Error::ExtraQueryAssoc(name.clone(), asc.clone()))
                                 }
-                                None => query_assoc = Some(assoc.clone()),
+                                None => {
+                                    matched = true;
+                                    query_assoc = Some(asc.clone())
+                                }
                             },
                             _ => (),
                         }
                     }
                 }
+            }
+            if !matched {
+                return Err(Error::NonExplodeAssoc(asc.into()));
             }
         }
         self.path_assoc = path_assoc;
@@ -737,6 +749,67 @@ mod test {
     use nom::error::ErrorKind;
 
     use super::*;
+
+    #[test]
+    fn test_path_assoc_annotation() {
+        let mut parsed = parse("http://example.com/something{/extra*}").expect("successful parse");
+        parsed
+            .annotate_assocs(vec!["extra".into()])
+            .expect("no error");
+        assert_eq!(Some("extra"), parsed.path_assoc_name().as_deref());
+        assert_eq!(None, parsed.query_assoc_name());
+    }
+
+    #[test]
+    fn test_query_assoc_annotation() {
+        let mut parsed = parse("http://example.com/something{?extra*}").expect("successful parse");
+        parsed
+            .annotate_assocs(vec!["extra".into()])
+            .expect("no error");
+        assert_eq!(None, parsed.path_assoc_name());
+        assert_eq!(Some("extra"), parsed.query_assoc_name().as_deref());
+    }
+
+    #[test]
+    fn test_both_assoc_annotation() {
+        let mut parsed =
+            parse("http://example.com/something{/foo*}{?bar*}").expect("successful parse");
+        parsed
+            .annotate_assocs(vec!["foo".into(), "bar".into()])
+            .expect("no error");
+        assert_eq!(Some("foo"), parsed.path_assoc_name().as_deref());
+        assert_eq!(Some("bar"), parsed.query_assoc_name().as_deref());
+    }
+
+    #[test]
+    fn test_double_assoc_annotation() {
+        let mut parsed =
+            parse("http://example.com/something{/foo*}{?foo*}").expect("successful parse");
+        parsed
+            .annotate_assocs(vec!["foo".into()])
+            .expect("no error");
+        assert_eq!(Some("foo"), parsed.path_assoc_name().as_deref());
+        assert_eq!(Some("foo"), parsed.query_assoc_name().as_deref());
+    }
+
+    #[test]
+    fn test_assoc_errors() {
+        let mut parsed =
+            parse("http://example.com/something{/foo*}{?bar*}").expect("successful parse");
+        assert!(matches!(
+            parsed.annotate_assocs(vec!["foo".into(), "bar".into(), "baz".into()]),
+            Err(_)
+        ));
+        let mut parsed =
+            parse("http://example.com/something{/foo}{?bar}").expect("successful parse");
+        assert!(matches!(parsed.annotate_assocs(vec!["foo".into()]), Err(_)));
+        let mut parsed =
+            parse("http://example.com/something{?foo*,bar*}").expect("successful parse");
+        assert!(matches!(
+            parsed.annotate_assocs(vec!["foo".into(), "bar".into()]),
+            Err(_)
+        ));
+    }
 
     #[test]
     fn test_parse() {
