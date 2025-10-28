@@ -20,6 +20,76 @@ impl RouteTemplate for MyRoute {
 }
 */
 
+#[proc_macro]
+pub fn id_type(input: StdTokenStream) -> StdTokenStream {
+    #[cfg(debug_output)]
+    eprintln!("INPUT: {:?}\n\n", input);
+
+    let proc2_item = TokenStream::from(input);
+
+    let mut tok_iter = proc2_item.into_iter().peekable();
+
+    // INPUT: TokenStream [Ident { ident: "TwoId", span: #0 bytes(3192..3197) }, Group { delimiter: Parenthesis, stream: TokenStream [Ident { ident: "i64", span:
+    // #0 bytes(3198..3201) }], span: #0 bytes(3197..3202) }, Punct { ch: ',', spacing: Alone, span: #0 bytes(3202..3203) }, Ident { ident: "IdForTwo", span: #0
+    // bytes(3204..3212) }]
+
+    let name = if let Some(ident) = tok_iter.next() {
+        ident
+    } else {
+        panic!("first id_type token must be an ident");
+    };
+
+    let wraps = if let Some(TokenTree::Group(group)) = tok_iter.next() {
+        let mut group_iter = group.stream().into_iter();
+        if let Some(ident) = group_iter.next() {
+            ident
+        } else {
+            panic!("id_type wrapping group must not be empty");
+        }
+    } else {
+        panic!("id_type ended early");
+    };
+
+    let mut expanded = quote! {
+        #[derive(::std::cmp::PartialEq, ::std::cmp::Eq, ::std::hash::Hash, ::std::fmt::Debug, ::std::clone::Clone, ::std::marker::Copy, ::sqlx::Type, ::serde::Deserialize, ::serde::Serialize)]
+        #[sqlx(transparent)]
+        #[serde(transparent)]
+        pub struct #name(#wraps);
+
+        impl ::std::convert::From<#wraps> for #name {
+            fn from(n: #wraps) -> Self {
+                Self(n)
+            }
+        }
+
+        impl ::std::convert::From<#name> for #wraps {
+            fn from(val: #name) -> Self {
+                val.0
+            }
+        }
+
+        impl ::std::fmt::Display for #name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> Result<(), ::std::fmt::Error> {
+                write!(f, "#name{}", self.0)
+            }
+        }
+    };
+
+    if let Some(_) = tok_iter.next() {
+        if let Some(marker) = tok_iter.next() {
+            let extra = quote! {
+                pub(crate) trait #marker {}
+                impl #marker for #name {}
+                impl #marker for ::mattak::querymapping::NoId {}
+            };
+            expanded.extend(extra);
+        }
+    }
+    #[cfg(debug_output)]
+    eprintln!("OUTPUT: {:?}\n\n", expanded);
+    expanded.into()
+}
+
 #[proc_macro_derive(Route, attributes(template, assoc))]
 pub fn route_derive(annotated_item: StdTokenStream) -> StdTokenStream {
     let (struct_name, template, vars, _var_types, assoc_vars) = parse_route(annotated_item);

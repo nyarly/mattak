@@ -51,7 +51,7 @@
                 ];
               })
               #cargo
-              #cargo-expand
+              cargo-expand
               #rustc
               # rust-analyzer
               #clippy

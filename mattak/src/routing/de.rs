@@ -665,7 +665,7 @@ impl UriDeserializer {
         };
 
         // definitely considering a secondary Nom parser instead of RE here.
-        let caps = dbg!(regex)
+        let caps = regex
             .captures(url)
             .ok_or_else(|| error::Error::NoMatch(url.to_string()))?;
 
@@ -1594,9 +1594,7 @@ mod tests {
             crate::routing::Entry::from_uri(&cfg, uri.clone()).expect("deserialize");
         assert_eq!(
             "test",
-            dbg!(&search)
-                .get("query")
-                .expect("query to be deserialized")
+            search.get("query").expect("query to be deserialized")
         );
         assert_eq!(
             "kind=boardgame",
@@ -1609,7 +1607,7 @@ mod tests {
         }
         let search_struct: Search =
             crate::routing::Entry::from_uri(&cfg, uri.clone()).expect("deserialize");
-        assert_eq!("test", dbg!(&search_struct).query);
+        assert_eq!("test", &search_struct.query);
         assert_eq!(
             "boardgame",
             search_struct

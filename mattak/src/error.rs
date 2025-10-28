@@ -3,7 +3,7 @@ use axum::{http, response::IntoResponse};
 use axum_extra::extract as extra_extract;
 use tracing::debug;
 
-use crate::routing;
+use crate::{biscuits, querymapping, routing};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
@@ -40,8 +40,6 @@ pub enum Error {
     BadETagFormat(String),
     #[error("couldn't convert value to IRI: {0:?}")]
     IriConversion(String),
-    #[error("issue building token: {0:?}")]
-    Token(#[from] biscuit_auth::error::Token),
     #[error("routing match error")]
     MatchedPath(#[from] extract::rejection::MatchedPathRejection),
     #[error("nested path error")]
@@ -54,14 +52,6 @@ pub enum Error {
     Host(#[from] extract::rejection::HostRejection),
     #[error("extracting query params")]
     Query(#[from] extra_extract::QueryRejection),
-    #[error("no authentication context found")]
-    MissingContext,
-    #[error("no authentication credential token found")]
-    NoToken,
-    #[error("provided token has been revoked")]
-    RevokedToken,
-    #[error("authorization failed")]
-    AuthorizationFailed,
     #[error("precondition failed: {0}")]
     PreconditionFailed(String),
     #[error("malformed header: {0}")]
@@ -72,6 +62,10 @@ pub enum Error {
     URITemplating(#[from] routing::UriSerializationError),
     #[error("parse annotation error: {0}")]
     ParseAnnotation(#[from] routing::ParserError),
+    #[error("database error: {0}")]
+    DatabaseError(#[from] querymapping::Error),
+    #[error("authentication: {0}")]
+    Biscuit(#[from] biscuits::Error),
 }
 
 impl IntoResponse for Error {
@@ -79,44 +73,23 @@ impl IntoResponse for Error {
         use http::status::StatusCode;
         debug!("Returning error: {:?}", &self);
         match self {
-            Error::NoToken => (StatusCode::UNAUTHORIZED, "/api/authentication").into_response(),
-            Error::RevokedToken => {
-                (StatusCode::UNAUTHORIZED, "/api/authentication").into_response()
-            }
-            Error::AuthorizationFailed => {
-                (StatusCode::FORBIDDEN, "insufficient access").into_response()
-            }
             Error::PreconditionFailed(s) => (StatusCode::PRECONDITION_FAILED, s).into_response(),
-            Error::Token(err) => match err {
-                biscuit_auth::error::Token::ConversionError(_) => {
-                    (StatusCode::BAD_REQUEST, "couldn't convert token").into_response()
-                }
-                biscuit_auth::error::Token::Base64(_) => {
-                    (StatusCode::BAD_REQUEST, "invalid token encoding").into_response()
-                }
-                biscuit_auth::error::Token::Format(_) => {
-                    (StatusCode::BAD_REQUEST, "invalid token format").into_response()
-                }
-                _ => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal authentication error",
-                )
-                    .into_response(),
-            },
             Error::MatchedPath(mpe) => mpe.into_response(),
             Error::NestedPath(e) => e.into_response(),
             Error::Extension(ee) => ee.into_response(),
             Error::PathParams(e) => e.into_response(),
             Error::Host(e) => e.into_response(),
             Error::Query(e) => e.into_response(),
+            Error::Biscuit(e) => e.into_response(),
+            Error::DatabaseError(e) => e.into_response(),
             Error::UnexpectedVariables(_)
             | Error::MismatchedValues(_, _, _)
             | Error::InvalidInput(_)
             | Error::BadETagFormat(_)
             | Error::InvalidHeaderValue(_)
             | Error::Header(_) => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
-            Error::MissingContext
-            | Error::Unknown(_)
+
+            Error::Unknown(_)
             | Error::CreateString(_)
             | Error::Deserialization(_)
             | Error::ExtraCaptures(_)

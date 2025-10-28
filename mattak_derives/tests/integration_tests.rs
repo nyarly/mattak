@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use iri_string::{spec::IriSpec, template::UriTemplateStr};
-use mattak_derives::{Context, Listable, Route, RouteTemplate};
+use mattak_derives::{id_type, Context, Listable, Route, RouteTemplate};
 
 use ::mattak::routing::Route;
 
@@ -13,7 +13,7 @@ struct AListable {
 }
 
 #[allow(dead_code)] // I just want to check that it lists the field names
-#[derive(Clone, RouteTemplate, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, RouteTemplate, Debug, Default, PartialEq, Eq, Hash)]
 #[template("/event_games/{event_id}/user/{user_id}")]
 struct ARouteTemplate {}
 
@@ -122,3 +122,9 @@ fn live_route_derive() {
     let uri = hyper::Uri::from_static("http://example.com/search?query=test");
     let _search: Search = mattak::routing::Entry::from_uri(&cfg, uri.clone()).expect("deserialize");
 }
+
+id_type!(OneId(i64));
+id_type!(TwoId(i64), IdForTwo);
+
+#[test]
+fn idtype() {}

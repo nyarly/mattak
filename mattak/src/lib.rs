@@ -5,5 +5,6 @@ pub mod biscuits;
 pub mod condreq;
 pub mod cachecontrol;
 pub mod ratelimiting;
+pub mod querymapping;
 
 pub use error::Error;
