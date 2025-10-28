@@ -59,7 +59,6 @@ impl RootKeyProvider for WebKeyProvider {
 }
 
 const CONCURRENT_KEY_REQUESTS: usize = 10;
-
 impl AuthorityMap {
     pub async fn fetch_keys(&self) -> Result<KeyMap, Error> {
         let client = Client::builder().use_rustls_tls().build()?;
