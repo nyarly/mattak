@@ -4,6 +4,8 @@
 * break into crates
 * features on `mattak` crate to incorporate sub-crates
 * push errors down
+* make error handling sensible
+* considered approach re IRIs vs URIs
 
 ## Routing
 

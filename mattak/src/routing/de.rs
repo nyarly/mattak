@@ -41,7 +41,10 @@ impl UriDeserializationError {
     }
 
     pub(super) fn cant_fill_parameters<T>(varlist: Vec<(Rc<str>, T)>, expected: usize) -> Self {
-        let got = varlist.iter().map(|(name, _)| name.clone()).collect();
+        let got = varlist
+            .iter()
+            .map(|(name, _)| name.as_ref().into())
+            .collect();
         Self {
             kind: ErrorKind::CantFillParameters { got, expected },
         }
@@ -92,7 +95,7 @@ pub enum ErrorKind {
 
     // The receiving variable can't hold the variables in the template
     CantFillParameters {
-        got: Vec<Rc<str>>,
+        got: Vec<String>,
         expected: usize,
     },
 

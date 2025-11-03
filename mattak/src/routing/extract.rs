@@ -6,21 +6,44 @@ use axum::{
     response::IntoResponse,
 };
 use hyper::Uri;
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
     error,
+    hypermedia::{Operation, ResourceFields},
     routing::{route_config, Entry, Route, RouteTemplate as _},
 };
 
-pub struct NestedRoute<R: Route> {
+pub trait ExtractedRoute {
+    type Nick: Route + Clone;
+    fn entry(&self) -> Entry;
+    fn nick(&self) -> Self::Nick;
+
+    fn resource_fields(
+        &self,
+        api_name: &str,
+        operation: Vec<Operation>,
+    ) -> Result<ResourceFields<Self::Nick>, error::Error>
+    where
+        <Self as ExtractedRoute>::Nick: Serialize,
+    {
+        ResourceFields::new(&self.entry(), self.nick(), api_name, operation)
+    }
+}
+
+pub struct NestedRoute<R> {
     pub nested_path: NestedPath,
     pub nick: R,
 }
 
-impl<R: Route> NestedRoute<R> {
-    pub fn entry(&self) -> Entry {
+impl<R: Route + Clone> ExtractedRoute for NestedRoute<R> {
+    type Nick = R;
+    fn entry(&self) -> Entry {
         R::route_template().prefixed(self.nested_path.as_str())
+    }
+
+    fn nick(&self) -> Self::Nick {
+        self.nick.clone()
     }
 }
 
@@ -79,9 +102,15 @@ pub struct CanonRoute<R: Route> {
     pub nick: R,
 }
 
-impl<R: Route> CanonRoute<R> {
-    pub fn entry(&self) -> Entry {
+impl<R: Route + Clone> ExtractedRoute for CanonRoute<R> {
+    type Nick = R;
+
+    fn entry(&self) -> Entry {
         R::route_template().prefixed(self.nested_path.as_str())
+    }
+
+    fn nick(&self) -> Self::Nick {
+        self.nick.clone()
     }
 }
 

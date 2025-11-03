@@ -30,6 +30,12 @@ impl IntoPolicySnapshot for Authorizer {
     }
 }
 
+impl IntoPolicySnapshot for AuthorizerBuilder {
+    fn into_snapshot(self) -> AuthorizerSnapshot {
+        self.snapshot().expect("authorizor to snapshot")
+    }
+}
+
 impl IntoPolicySnapshot for AuthorizerSnapshot {
     fn into_snapshot(self) -> AuthorizerSnapshot {
         self

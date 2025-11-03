@@ -64,6 +64,10 @@ pub fn template_vars(template: &str) -> Vec<String> {
 
 pub trait Route {
     fn route_template() -> RouteTemplateString;
+
+    fn axum_route() -> String {
+        route_config(Self::route_template()).axum_route()
+    }
 }
 
 pub trait RouteTemplate: Debug + Clone + Hash + Send + Sync + Eq

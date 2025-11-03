@@ -66,6 +66,8 @@ pub enum Error {
     DatabaseError(#[from] querymapping::Error),
     #[error("authentication: {0}")]
     Biscuit(#[from] biscuits::Error),
+    #[error("URI parsing: {0}")]
+    UriParse(#[from] http::uri::InvalidUri),
 }
 
 impl IntoResponse for Error {
@@ -87,11 +89,12 @@ impl IntoResponse for Error {
             | Error::InvalidInput(_)
             | Error::BadETagFormat(_)
             | Error::InvalidHeaderValue(_)
+            | Error::Deserialization(_)
             | Error::Header(_) => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
 
             Error::Unknown(_)
+            | Error::UriParse(_)
             | Error::CreateString(_)
-            | Error::Deserialization(_)
             | Error::ExtraCaptures(_)
             | Error::IriConversion(_)
             | Error::IriTempate(_)

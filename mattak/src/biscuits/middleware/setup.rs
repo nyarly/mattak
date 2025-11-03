@@ -35,17 +35,10 @@ async fn find_facts(
     let version = request.version();
     let version_str = format!("{:?}", version);
 
+    let extract::Host(host) = request.extract_parts().await?;
+
     let method = request.method().clone();
     let method_str = method.as_str();
-
-    let uri = request.uri().clone();
-    let uri_path = uri.path();
-
-    let maybe_uri_scheme = uri.scheme_str();
-    let maybe_uri_port = uri.port_u16();
-    let maybe_path_and_query = uri.path_and_query();
-
-    let extract::Host(host) = request.extract_parts().await?;
 
     let matched_path = request.extract_parts::<extract::MatchedPath>().await?;
     let full_route = matched_path.as_str();
@@ -53,7 +46,8 @@ async fn find_facts(
     let nested_path = request.extract_parts::<extract::NestedPath>().await?;
     let nested_at = nested_path.as_str();
 
-    let maybe_route = full_route.strip_prefix(nested_at);
+    let uri = request.uri().clone();
+    let uri_path = uri.path();
 
     let mut auth_builder = authorizer!(
         r#"
@@ -66,19 +60,23 @@ async fn find_facts(
         "#
     );
 
+    let maybe_route = full_route.strip_prefix(nested_at);
     if let Some(route) = maybe_route {
         auth_builder = auth_builder.fact(fact!("route({route})"))?;
     }
 
+    let maybe_uri_scheme = uri.scheme_str();
     if let Some(uri_scheme) = maybe_uri_scheme {
         auth_builder = auth_builder.fact(fact!("uri_scheme({uri_scheme})"))?;
     }
 
+    let maybe_uri_port = uri.port_u16();
     if let Some(uri_port) = maybe_uri_port {
         let uri_port = uri_port as i64;
         auth_builder = auth_builder.fact(fact!("uri_port({uri_port})"))?;
     }
 
+    let maybe_path_and_query = uri.path_and_query();
     if let Some(path_and_query) = maybe_path_and_query {
         let full_path_str = path_and_query.as_str();
         auth_builder = auth_builder.fact(fact!("full_path({full_path_str})"))?;
