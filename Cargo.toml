@@ -13,3 +13,6 @@ license-file = "LICENSE"
 readme = "README.md"
 homepage = "https://github.com/nyarly/mattak"
 repository = "https://github.com/nyarly/mattak"
+
+[workspace.dependencies]
+mattak = {path = "./mattak"}
