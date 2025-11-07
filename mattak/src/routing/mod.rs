@@ -16,7 +16,11 @@ use render::fill_parts;
 use serde::de::DeserializeOwned;
 use tracing::{debug, trace};
 
-use crate::{error::Error, routing::parser::VarMod};
+use crate::{
+    error::Error,
+    hypermedia::{Affordance, Operation},
+    routing::parser::VarMod,
+};
 
 use self::{
     parser::{Parsed, Part},
@@ -337,6 +341,11 @@ impl Entry {
         inner.template()
     }
 
+    pub fn affordance(&self, name: String, ops: Vec<Operation>) -> Result<Affordance, Error> {
+        let inner = self.inner.read().expect("not poisoned");
+        inner.affordance(name, ops)
+    }
+
     pub fn hydra_type(&self) -> String {
         let inner = self.inner.read().expect("not poisoned");
         inner.hydra_type()
@@ -378,6 +387,36 @@ impl InnerSingle {
             .collect()
     }
 
+    fn affordance(&self, name: String, ops: Vec<Operation>) -> Result<Affordance, Error> {
+        if self.expressions().is_empty() {
+            let empty = iri_string::template::simple_context::SimpleContext::new();
+            let id = self.template()?.expand(&empty)?.try_into()?;
+            Ok(Affordance::Link { id, operation: ops })
+        } else {
+            Ok(Affordance::IriTemplate {
+                id: name.try_into()?,
+                template: self.template()?,
+                operation: ops,
+            })
+        }
+    }
+    /*
+    let entry = |rm: RouteMap, ops| {
+        let prefixed = rm.prefixed(nested_at);
+        let url_attr = if prefixed.hydra_type() == "Link" {
+            "id"
+        } else {
+            "template"
+        };
+        let url_template = prefixed.template().expect("a legit URITemplate");
+        json!({
+            "type": prefixed.hydra_type(),
+            url_attr: url_template,
+            "operation": ops
+        })
+    };
+    */
+
     fn hydra_type(&self) -> String {
         if self.expressions().is_empty() {
             "Link".to_string()
@@ -414,15 +453,6 @@ impl InnerSingle {
         re
     }
 
-    /*
-    fn re_names(&self) -> Vec<String> {
-        self.parsed
-            .nonquery_parts_iter()
-            .flat_map(re_names)
-            .collect::<Vec<_>>()
-    }
-    */
-
     // definitely consider caching this result
     fn regex(&self) -> Result<&Regex, regex::Error> {
         self.regex
@@ -430,26 +460,6 @@ impl InnerSingle {
             .as_ref()
             .map_err(|e| e.clone())
     }
-
-    /*
-    fn extract<T: DeserializeOwned>(&self, url: &str) -> Result<T, Error> {
-        let caps = self
-            .regex()?
-            .captures(url)
-            .ok_or_else(|| Error::NoMatch(self.re_str(), url.to_string()))?;
-        let names = self.re_names();
-        let captures = names
-            .into_iter()
-            .filter_map(|name| {
-                caps.name(&name).and_then(move |m| {
-                    percent_decode(m.as_str()).map(move |value| (Arc::from(name.as_str()), value))
-                })
-            })
-            .collect::<Vec<_>>();
-
-        T::deserialize(de::UriDeserializer::new(&captures, None)).map_err(Error::from)
-    }
-    */
 
     fn from_uri<T: DeserializeOwned>(&self, uri: Uri) -> Result<T, Error> {
         let parsed = &self.parsed;

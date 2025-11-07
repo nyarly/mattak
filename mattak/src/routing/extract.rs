@@ -1,4 +1,5 @@
 use ::core::{future::Future, pin::Pin};
+use std::sync::Arc;
 
 use axum::{
     extract::{rejection::NestedPathRejection, FromRef, FromRequestParts, NestedPath},
@@ -10,7 +11,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
     error,
-    hypermedia::{Operation, ResourceFields},
+    hypermedia::{Affordance, Operation, ResourceFields},
     routing::{route_config, Entry, Route, RouteTemplate as _},
 };
 
@@ -29,22 +30,63 @@ pub trait ExtractedRoute {
     {
         ResourceFields::new(&self.entry(), self.nick(), api_name, operation)
     }
+
+    fn affordance(&self, name: impl ToString, ops: Vec<Operation>) -> Affordance {
+        self.entry()
+            .affordance(name.to_string(), ops)
+            .expect("entries to produce affordances")
+    }
 }
 
 pub struct NestedRoute<R> {
-    pub nested_path: NestedPath,
+    pub nested_path: Arc<str>,
     pub nick: R,
+}
+
+impl<R> NestedRoute<R> {
+    pub fn default_relative_route<N: Default>(&self, rel: impl ToString) -> NestedRoute<N> {
+        let nested_path = nest_rel(self.nested_path.clone(), rel.to_string());
+        NestedRoute {
+            nested_path,
+            nick: N::default(),
+        }
+    }
+
+    pub fn relative_route<N>(&self, rel: impl ToString, nick: N) -> NestedRoute<N> {
+        let nested_path = nest_rel(self.nested_path.clone(), rel.to_string());
+        NestedRoute { nested_path, nick }
+    }
 }
 
 impl<R: Route + Clone> ExtractedRoute for NestedRoute<R> {
     type Nick = R;
+
     fn entry(&self) -> Entry {
-        R::route_template().prefixed(self.nested_path.as_str())
+        R::route_template().prefixed(self.nested_path.as_ref())
     }
 
     fn nick(&self) -> Self::Nick {
         self.nick.clone()
     }
+}
+
+// XXX tests
+fn nest_rel(nested: Arc<str>, rel: String) -> Arc<str> {
+    if rel == "" || rel == "." {
+        return nested.clone();
+    }
+
+    let mut parts: Vec<_> = nested.as_ref().split("/").collect();
+    for relpart in rel.split("/") {
+        match relpart {
+            ".." => {
+                parts.pop();
+            }
+            "." | "" => (),
+            seg => parts.push(seg),
+        }
+    }
+    parts.join("/").into()
 }
 
 impl<R, S> FromRequestParts<S> for NestedRoute<R>
@@ -82,7 +124,10 @@ where
     R: Route + DeserializeOwned,
     S: Send + Sync,
 {
-    let nested_path = NestedPath::from_request_parts(parts, state).await?;
+    let nested_path = NestedPath::from_request_parts(parts, state)
+        .await?
+        .as_str()
+        .into();
 
     let rt = R::route_template();
     let cfg = route_config(rt);
@@ -98,7 +143,7 @@ pub struct CanonicalUri(Uri);
 
 pub struct CanonRoute<R: Route> {
     pub uri: Uri,
-    pub nested_path: NestedPath,
+    pub nested_path: Arc<str>,
     pub nick: R,
 }
 
@@ -106,7 +151,7 @@ impl<R: Route + Clone> ExtractedRoute for CanonRoute<R> {
     type Nick = R;
 
     fn entry(&self) -> Entry {
-        R::route_template().prefixed(self.nested_path.as_str())
+        R::route_template().prefixed(self.nested_path.as_ref())
     }
 
     fn nick(&self) -> Self::Nick {
@@ -153,7 +198,10 @@ where
 {
     let uri = CanonicalUri::from_ref(&state).0;
 
-    let nested_path = NestedPath::from_request_parts(parts, state).await?;
+    let nested_path = NestedPath::from_request_parts(parts, state)
+        .await?
+        .as_str()
+        .into();
 
     let rt = R::route_template();
     let cfg = route_config(rt);

@@ -3,13 +3,14 @@ use biscuit_auth::{BiscuitWebKey, RootKeyProvider};
 use bounded_join_set::JoinSet;
 use hyper::{header, HeaderMap};
 use reqwest::Client;
-use tracing::debug;
+use serde::Deserialize;
+use tracing::{debug, trace};
 
 use crate::biscuits::middleware::setup::{GetPublic, GetPublicSource};
 
 use super::Error;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AuthorityMapping {
     pub url: String,
     pub keyset: String,
@@ -165,6 +166,7 @@ impl RootKeyProvider for WebKeyProvider {
         &self,
         key_id: Option<u32>,
     ) -> Result<biscuit_auth::PublicKey, biscuit_auth::error::Format> {
+        trace!("Getting pubkey {key_id:?}");
         match self.0.get(key_id.unwrap_or(0) as usize) {
             Some(bwk) => Ok(bwk.public_key),
             None => Err(biscuit_auth::error::Format::UnknownPublicKey),

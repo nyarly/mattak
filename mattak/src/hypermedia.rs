@@ -7,6 +7,41 @@ use crate::{error::Error, routing};
 
 #[derive(Serialize, Clone)]
 #[serde(tag = "type")]
+pub enum Affordance {
+    IriTemplate {
+        id: IriReferenceString,
+        template: UriTemplateString,
+        operation: Vec<Operation>,
+    },
+    Link {
+        id: IriReferenceString,
+        operation: Vec<Operation>,
+    },
+}
+
+impl From<IriTemplate> for Affordance {
+    fn from(
+        IriTemplate {
+            id,
+            template,
+            operation,
+        }: IriTemplate,
+    ) -> Self {
+        Self::IriTemplate {
+            id,
+            template,
+            operation,
+        }
+    }
+}
+impl From<Link> for Affordance {
+    fn from(Link { id, operation }: Link) -> Self {
+        Self::Link { id, operation }
+    }
+}
+
+#[derive(Serialize, Clone)]
+#[serde(tag = "type")]
 pub struct IriTemplate {
     pub id: IriReferenceString,
     // pub r#type: String,

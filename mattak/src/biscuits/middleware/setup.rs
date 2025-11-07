@@ -20,17 +20,22 @@ use std::{
     task::{Context, Poll},
 };
 use tower::{Layer, Service};
+use tracing::{error, trace};
 
 async fn find_facts(
     header: String,
     root: impl RootKeyProvider,
     mut request: Request,
 ) -> Result<Request, Error> {
-    let token = request
+    let token_res = request
         .headers()
         .get(header.clone())
         .map(|val| Biscuit::from_base64(val.as_bytes(), root))
-        .transpose()?;
+        .transpose();
+
+    trace!("Token result: {token_res:?}");
+
+    let token = token_res?;
 
     let version = request.version();
     let version_str = format!("{:?}", version);
@@ -258,7 +263,10 @@ where
                             let response = this.service.call(request);
                             this.state.set(State::WaitResponse { response });
                         }
-                        Err(e) => return Poll::Ready(Ok(e.into_response())),
+                        Err(e) => {
+                            error!("error collecting auth facts: {e:?}");
+                            return Poll::Ready(Ok(e.into_response()));
+                        }
                     }
                 }
                 StateProj::WaitResponse { response } => {
