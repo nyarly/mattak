@@ -1,11 +1,21 @@
 [workspace]
 resolver = "2"
-members = [ "mattak","mattak_derives"]
+members = [
+  "mattak",
+  "mattak_biscuits",
+  "mattak_cachecontrol",
+  "mattak_condreq",
+  "mattak_derives",
+  "mattak_hypermedia",
+  "mattak_querymapping",
+  "mattak_ratelimiting",
+  "mattak_routing"
+]
 
 # per https://doc.rust-lang.org/cargo/reference/workspaces.html
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Judson Lester <nyarly+mattak@gmail.com>"]
 categories = ["web-programming", "web-programming::http-server" ]
@@ -15,4 +25,16 @@ homepage = "https://github.com/nyarly/mattak"
 repository = "https://github.com/nyarly/mattak"
 
 [workspace.dependencies]
-mattak = {path = "./mattak"}
+tracing = "0.1"
+axum = { version = "0.7", features = ["macros", "json"]}
+axum-extra = { version = "0.9.3", features = ["query", "typed-header"] }
+base64ct = { version = "1.6.0", features = ["alloc"] }
+chrono = { version = "0.4.38" }
+serde = { version = "1.0.204", features = ["derive"] }
+serde_json = "1.0.120"
+percent-encoding = "2.3.1"
+thiserror = "1.0.63"
+hyper = { version = "1.4", features = ["client", "http1"] }
+tower = "0.4.13"
+futures = "0.3.30"
+futures-util = "0.3.30"

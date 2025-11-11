@@ -4,10 +4,9 @@ use chrono::{TimeDelta, Utc};
 use serde::Serialize;
 
 use crate::{
-    biscuits::Authentication,
     condreq,
     routing::{Route, RouteTemplateString},
-    Error,
+    Authentication, Error,
 };
 
 pub struct WellKnownKeySet();

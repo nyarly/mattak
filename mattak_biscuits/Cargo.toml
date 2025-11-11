@@ -1,0 +1,29 @@
+[package]
+name = "mattak_biscuits"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+categories.workspace = true
+license-file.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+reqwest = { version = "0.12.24", features = ["rustls-tls"] }
+biscuit-auth = { version = "6.0", features = ["bwk"] }
+pin-project-lite = "0.2.14"
+bounded_join_set = "0.3.0"
+
+serde_json.workspace = true
+axum.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hyper.workspace = true
+axum-extra.workspace = true
+serde.workspace = true
+chrono.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+tower.workspace = true
+base64ct.workspace = true

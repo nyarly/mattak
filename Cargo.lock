@@ -1430,12 +1430,11 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
 name = "mattak"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "axum-extra",
  "base64ct",
- "biscuit-auth",
  "bounded_join_set",
  "chrono",
  "futures",
@@ -1443,11 +1442,11 @@ dependencies = [
  "governor",
  "hyper",
  "iri-string",
+ "mattak_biscuits",
  "nom",
  "percent-encoding",
  "pin-project-lite",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1461,8 +1460,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "mattak_biscuits"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "axum-extra",
+ "base64ct",
+ "biscuit-auth",
+ "bounded_join_set",
+ "chrono",
+ "futures",
+ "futures-util",
+ "hyper",
+ "pin-project-lite",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tower 0.4.13",
+ "tracing",
+]
+
+[[package]]
+name = "mattak_cachecontrol"
+version = "0.3.0"
+
+[[package]]
+name = "mattak_condreq"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "axum-extra",
+ "base64ct",
+ "hyper",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "mattak_derives"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hyper",
  "iri-string",
@@ -1472,6 +1512,22 @@ dependencies = [
  "serde",
  "sqlx",
 ]
+
+[[package]]
+name = "mattak_hypermedia"
+version = "0.3.0"
+
+[[package]]
+name = "mattak_querymapping"
+version = "0.3.0"
+
+[[package]]
+name = "mattak_ratelimiting"
+version = "0.3.0"
+
+[[package]]
+name = "mattak_routing"
+version = "0.3.0"
 
 [[package]]
 name = "md-5"

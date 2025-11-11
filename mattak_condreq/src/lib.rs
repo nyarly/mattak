@@ -1,28 +1,59 @@
-use axum::{async_trait, extract::FromRequestParts, http::request, response::{IntoResponse, Response}, Json};
-use axum_extra::{headers::{self, ETag, Header as _, IfMatch, IfNoneMatch}, TypedHeader};
+use axum::{
+    async_trait,
+    extract::FromRequestParts,
+    http::{self, request},
+    response::{IntoResponse, Response},
+    Json,
+};
+use axum_extra::{
+    headers::{self, ETag, Header as _, IfMatch, IfNoneMatch},
+    TypedHeader,
+};
+use base64ct::{Base64, Encoding};
 use hyper::StatusCode;
 use serde::Serialize;
-use base64ct::{Base64, Encoding};
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
-use crate::error::Error;
+#[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
+pub enum Error {
+    #[error("couldn't serialize JSON: {0:?}")]
+    JSONSerialization(#[from] serde_json::Error),
+    #[error("badly formatted ETag: {0:?}")]
+    BadETagFormat(String),
+    #[error("precondition failed: {0}")]
+    PreconditionFailed(String),
+}
+
+impl IntoResponse for Error {
+    fn into_response(self) -> axum::response::Response {
+        use http::status::StatusCode;
+        match self {
+            Error::PreconditionFailed(s) => (StatusCode::PRECONDITION_FAILED, s).into_response(),
+            Error::BadETagFormat(_) => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
+            Error::JSONSerialization(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
+            }
+        }
+    }
+}
 
 fn etag_for<T: Serialize>(v: T) -> Result<ETag, Error> {
     let mut hasher = Sha256::new();
     serde_json::to_writer(&mut hasher, &v)?;
     let bytes = hasher.finalize();
-    let res = format!("\"{}\"", Base64::encode_string(&bytes[..])).parse()
+    let res = format!("\"{}\"", Base64::encode_string(&bytes[..]))
+        .parse()
         .map_err(|e| Error::BadETagFormat(format!("{:?}", e)));
     debug!("result: {:?}", res);
     res
-
 }
 
 #[derive(Debug)]
 pub enum CondUpdateHeader {
     IfMatch(headers::IfMatch),
-    None
+    None,
 }
 
 #[derive(Debug)]
@@ -41,8 +72,11 @@ impl<S: Send + Sync> FromRequestParts<S> for CondUpdateHeader {
     type Rejection = CondHeaderRejection;
 
     #[doc = "Extract CondUpdateHeader from Request"]
-    #[allow(clippy::type_complexity,clippy::type_repetition_in_bounds)]
-    async fn from_request_parts(parts: &mut request::Parts, _state: &S) ->  Result<Self,Self::Rejection> {
+    #[allow(clippy::type_complexity, clippy::type_repetition_in_bounds)]
+    async fn from_request_parts(
+        parts: &mut request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
         let mut values = parts.headers.get_all(IfMatch::name()).iter();
         if values.size_hint() == (0, Some(0)) {
             Ok(Self::None)
@@ -57,19 +91,23 @@ impl<S: Send + Sync> FromRequestParts<S> for CondUpdateHeader {
 impl CondUpdateHeader {
     pub fn guard_update(&self, body: impl Serialize) -> Result<(), Error> {
         match self {
-            CondUpdateHeader::IfMatch(if_match) => if if_match.precondition_passes( &etag_for(body)?) {
-                Ok(())
-            } else {
-                Err(Error::PreconditionFailed("etag didn't match for update".to_string()))
-            },
-            CondUpdateHeader::None =>  Ok(())
+            CondUpdateHeader::IfMatch(if_match) => {
+                if if_match.precondition_passes(&etag_for(body)?) {
+                    Ok(())
+                } else {
+                    Err(Error::PreconditionFailed(
+                        "etag didn't match for update".to_string(),
+                    ))
+                }
+            }
+            CondUpdateHeader::None => Ok(()),
         }
     }
 }
 
 pub enum CondRetreiveHeader {
     IfNoneMatch(headers::IfNoneMatch),
-    None
+    None,
 }
 
 #[async_trait]
@@ -77,8 +115,11 @@ impl<S: Send + Sync> FromRequestParts<S> for CondRetreiveHeader {
     type Rejection = CondHeaderRejection;
 
     #[doc = "Extract CondRetreiveHeader from Request"]
-    #[allow(clippy::type_complexity,clippy::type_repetition_in_bounds)]
-    async fn from_request_parts(parts: &mut request::Parts, _state: &S) ->  Result<Self,Self::Rejection> {
+    #[allow(clippy::type_complexity, clippy::type_repetition_in_bounds)]
+    async fn from_request_parts(
+        parts: &mut request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
         let mut values = parts.headers.get_all(IfNoneMatch::name()).iter();
         if values.size_hint() == (0, Some(0)) {
             Ok(Self::None)
@@ -101,7 +142,7 @@ impl CondRetreiveHeader {
                     Ok((StatusCode::NOT_MODIFIED, TypedHeader(etag)).into_response())
                 }
             }
-            CondRetreiveHeader::None => Ok(EtaggedJson(body).into_response())
+            CondRetreiveHeader::None => Ok(EtaggedJson(body).into_response()),
         }
     }
 }

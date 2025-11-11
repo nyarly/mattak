@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, trace};
 
-use crate::biscuits::middleware::setup::{GetPublic, GetPublicSource};
+use crate::middleware::setup::{GetPublic, GetPublicSource};
 
 use super::Error;
 

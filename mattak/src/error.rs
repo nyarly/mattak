@@ -35,9 +35,9 @@ pub enum Error {
     #[error("capture deserialization: {0:?}")]
     Deserialization(#[from] routing::UriDeserializationError),
     #[error("couldn't serialize JSON: {0:?}")]
-    JSONSerialization(#[from] serde_json::Error),
+    JSONSerialization(#[from] serde_json::Error), // XXX to condreq
     #[error("badly formatted ETag: {0:?}")]
-    BadETagFormat(String),
+    BadETagFormat(String), // XXX to condreq
     #[error("couldn't convert value to IRI: {0:?}")]
     IriConversion(String),
     #[error("routing match error")]
