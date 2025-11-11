@@ -7,20 +7,39 @@
 * make error handling sensible
 * considered approach re IRIs vs URIs
 
+* sqlxmq standard parts?
+
 ## Routing
 
 * For the URITemplate/matchit "bridge"
   - consider adding the ability to "trade" '//' for a limit of 1 pre-path
     expression
 * Good documentation of our URITemplate/matchit frankenstein language
+* elsewhere, the Elm URITemplate library I'm using doesn't cover level 4
+  * replace?
+  * extend?
 
 ## Authentication
 
 * Build general purpose resources for auth/registration
+  * Or maybe a central auth service?
 * Pull mailing and sqlxmq from WtP
   * Mail needs configuration
   * sqlxmq needs to be able to share its migrations
 * Need some kind of interface for Revocations and Users - DB agnostic?
+* auth keypair rotation
+* keyset keypair tracking
+* revocation dissemination
+  * add a revoke-serial to biscuits
+  * downstream can compare to their revoke list and fetch new ones if needed
+* token renewal (and time-based attenuation)
+* IP association - at least "issued_remote_ip" and let application check
+  * problem here is NAT on the client side and proxying on the server side
+  * trust X-Forwarded-For ?
+    * ...from a particular IP/range? My purposes, "trust forwarded-for from 127.0.0.1"
+
+* need to decide on a Authorization: scheme - bearer probably okay/correct for biscuits
+* consider a SPAKE over HTTP though for the initial auth
 
 ## Ratelimiting
 
@@ -54,6 +73,16 @@ notation: {
 and have "event" and "user" be @contexted as datatype IRIs, JSON-LD doesn't expand that way.
 *For the time being* we'll do that _anyway_ and if at some point we come in the validated fold,
 we can adjust how we process SKOS notations as more verbose structures.
+Per [JSON-LD spec](https://www.w3.org/TR/json-ld/#typed-values)
+the context could describe the SKOS types for a nickname, so I think this should be okay
+long term.
+
+Important question: what does JSON-LD/Hydra get us beyond design guidelines?
+Once it's properly documented (i.e. @context Link headers etc),
+we get a published schema that implementers can refer to.
+Ideally, we're able to construct something in Rust that lets us ship @context documents
+automatically, including RDF:Classes for our DTOs.
+
 
 It's tempting, always to set up macros or something for what feel like
 repetitive fields in the DB/HTTP DTOs. Some real wins with flattened sub-structs
@@ -85,16 +114,3 @@ Duplicating code now leaves room for variation later.
 Interactions with the client are going to be the most painful to unpick.
 
 Routing remains an area of interest.
-
-HTTP DTOs: a dilemma - do the DTOs get told `nested_at`, which feels a little out of scope,
-or do we hand them their routing::Entries to work with.
-Either could be made to work, but certainly lists would have to be given their item Entry as well....
-and then any other relationship would have to be provided by the consumer,
-ultimately coupling the evolution of a Resource to its consumers.
-`nested_at`, on the other hand, is the only piece of information
-that Resources (currently) require to determine routing for themselves,
-which is huge.
-It's possible, in future, that there would be more required,
-in which case a RouteContext might be needed instead. Still: a single Ctx instead
-of a bundle of `routing::Entry`s feels preferable - especially since
-there's no theoretical limit on that bundle, up to the whole route map.
