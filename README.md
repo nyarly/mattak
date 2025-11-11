@@ -59,3 +59,15 @@ or mere URIs.
 You'll find derive macros for RouteTemplates and Locators here,
 which will let you define one struct per route,
 and get all the `routing` goodness with a `#[derive(...)]` attribute.
+
+## License
+
+The
+[license](./LICENSE)
+for this project is
+the MPL-2.0 license.
+In addition,
+please **let me know** that you're using it.
+The long and the short of it
+is that I just want to know if what I've been doing
+is useful to someone else.
