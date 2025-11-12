@@ -1,112 +1,40 @@
-use axum::extract;
 use axum::{http, response::IntoResponse};
-use axum_extra::extract as extra_extract;
 use tracing::debug;
 
-use crate::{biscuits, querymapping, routing};
+use crate::{biscuits, condreq, hypermedia, querymapping, routing};
 
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
     #[error("unknown error: {0}")]
     Unknown(String),
-    #[error("trouble parsing: {0:?}")]
-    Parsing(String),
-    #[error("couldn't validate IRI: {0:?}")]
-    IriValidate(#[from] iri_string::validate::Error),
-    #[error("error processing IRI template: {0:?}")]
-    IriTempate(#[from] iri_string::template::Error),
-    #[error("creating a string for an IRI: {0:?}")]
-    CreateString(#[from] iri_string::types::CreationError<std::string::String>),
-    #[error("missing captures: {0:?}")]
-    MissingCaptures(Vec<String>),
-    #[error("extra captures: {0:?}")]
-    ExtraCaptures(Vec<String>),
-    #[error("cannot parse string as a header value: {0:?}")]
-    InvalidHeaderValue(#[from] http::header::InvalidHeaderValue),
-    #[error("regex parse: {0:?}")]
-    RegexParse(#[from] regex::Error),
-    #[error("for variable {0:?}: two different values: {1:?} vs {2:?}")]
-    MismatchedValues(String, String, String),
-    #[error("unexpected variable names {0:?}")]
-    UnexpectedVariables(Vec<String>),
-    #[error("no match: {0:?}")]
-    NoMatch(String),
-    #[error("capture deserialization: {0:?}")]
-    Deserialization(#[from] routing::UriDeserializationError),
-    #[error("couldn't serialize JSON: {0:?}")]
-    JSONSerialization(#[from] serde_json::Error), // XXX to condreq
-    #[error("badly formatted ETag: {0:?}")]
-    BadETagFormat(String), // XXX to condreq
-    #[error("couldn't convert value to IRI: {0:?}")]
-    IriConversion(String),
-    #[error("routing match error")]
-    MatchedPath(#[from] extract::rejection::MatchedPathRejection),
-    #[error("nested path error")]
-    NestedPath(#[from] extract::rejection::NestedPathRejection),
-    #[error("extension error")]
-    Extension(#[from] extract::rejection::ExtensionRejection),
-    #[error("extracting path params")]
-    PathParams(#[from] extract::rejection::RawPathParamsRejection),
-    #[error("extracting host")]
-    Host(#[from] extract::rejection::HostRejection),
-    #[error("extracting query params")]
-    Query(#[from] extra_extract::QueryRejection),
-    #[error("precondition failed: {0}")]
-    PreconditionFailed(String),
-    #[error("malformed header: {0}")]
-    Header(#[from] axum_extra::typed_header::TypedHeaderRejection),
-    #[error("input invalid: {0}")]
-    InvalidInput(String),
-    #[error("filling URI template")]
-    URITemplating(#[from] routing::UriSerializationError),
-    #[error("parse annotation error: {0}")]
-    ParseAnnotation(#[from] routing::ParserError),
     #[error("database error: {0}")]
-    DatabaseError(#[from] querymapping::Error),
+    Querymapping(#[from] querymapping::Error),
     #[error("authentication: {0}")]
-    Biscuit(#[from] biscuits::Error),
-    #[error("URI parsing: {0}")]
-    UriParse(#[from] http::uri::InvalidUri),
+    Biscuits(#[from] biscuits::Error),
+    // #[error("cachecontrol: {0:?}")]
+    // Cachecontrol(#[from] cachecontrol::Error),
+    #[error("condreq: {0:?}")]
+    Condreq(#[from] condreq::Error),
+    #[error("hypermedia: {0:?}")]
+    Hypermedia(#[from] hypermedia::Error),
+    // #[error("ratelimiting: {0:?}")]
+    // Ratelimiting(#[from] ratelimiting::Error),
+    #[error("routing: {0:?}")]
+    Routing(#[from] routing::Error),
 }
 
 impl IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
-        use http::status::StatusCode;
         debug!("Returning error: {:?}", &self);
         match self {
-            Error::PreconditionFailed(s) => (StatusCode::PRECONDITION_FAILED, s).into_response(),
-            Error::MatchedPath(mpe) => mpe.into_response(),
-            Error::NestedPath(e) => e.into_response(),
-            Error::Extension(ee) => ee.into_response(),
-            Error::PathParams(e) => e.into_response(),
-            Error::Host(e) => e.into_response(),
-            Error::Query(e) => e.into_response(),
-            Error::Biscuit(e) => e.into_response(),
-            Error::DatabaseError(e) => e.into_response(),
-            Error::UnexpectedVariables(_)
-            | Error::MismatchedValues(_, _, _)
-            | Error::InvalidInput(_)
-            | Error::BadETagFormat(_)
-            | Error::InvalidHeaderValue(_)
-            | Error::Deserialization(_)
-            | Error::Header(_) => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
-
-            Error::Unknown(_)
-            | Error::UriParse(_)
-            | Error::CreateString(_)
-            | Error::ExtraCaptures(_)
-            | Error::IriConversion(_)
-            | Error::IriTempate(_)
-            | Error::IriValidate(_)
-            | Error::JSONSerialization(_)
-            | Error::MissingCaptures(_)
-            | Error::NoMatch(_)
-            | Error::Parsing(_)
-            | Error::RegexParse(_)
-            | Error::URITemplating(_)
-            | Error::ParseAnnotation(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
+            Error::Biscuits(e) => e.into_response(),
+            Error::Querymapping(e) => e.into_response(),
+            Error::Condreq(e) => e.into_response(),
+            Error::Hypermedia(e) => e.into_response(),
+            Error::Routing(e) => e.into_response(),
+            Error::Unknown(_) => {
+                (http::StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
             }
         }
     }
