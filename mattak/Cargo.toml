@@ -12,17 +12,28 @@ license-file.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[features]
+default = ["biscuits", "cachecontrol", "condreq", "hypermedia", "querymapping", "ratelimiting", "routing"]
+biscuits = ["dep:mattak_biscuits"]
+cachecontrol = ["dep:mattak_cachecontrol"]
+condreq = ["dep:mattak_condreq"]
+hypermedia = ["dep:mattak_hypermedia"]
+querymapping = ["dep:mattak_querymapping"]
+ratelimiting = ["dep:mattak_ratelimiting"]
+routing = ["dep:mattak_routing"]
+
 [dependencies]
 axum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
-mattak_biscuits = { version = "0.3.0", path = "../mattak_biscuits" }
-mattak_cachecontrol = { version = "0.3.0", path = "../mattak_cachecontrol" }
-mattak_condreq = { version = "0.3.0", path = "../mattak_condreq" }
-mattak_hypermedia = { version = "0.3.0", path = "../mattak_hypermedia" }
-mattak_querymapping = { version = "0.3.0", path = "../mattak_querymapping" }
-mattak_ratelimiting = { version = "0.3.0", path = "../mattak_ratelimiting" }
-mattak_routing = { version = "0.3.0", path = "../mattak_routing" }
+mattak_biscuits = { version = "0.3.0", path = "../mattak_biscuits", optional = true }
+mattak_cachecontrol = { version = "0.3.0", path = "../mattak_cachecontrol", optional = true }
+mattak_condreq = { version = "0.3.0", path = "../mattak_condreq", optional = true }
+mattak_hypermedia = { version = "0.3.0", path = "../mattak_hypermedia", optional = true }
+mattak_querymapping = { version = "0.3.0", path = "../mattak_querymapping", optional = true }
+mattak_ratelimiting = { version = "0.3.0", path = "../mattak_ratelimiting", optional = true }
+mattak_routing = { version = "0.3.0", path = "../mattak_routing", optional = true }
+
 [dev-dependencies]
 tracing-test = "0.2.5"
