@@ -17,10 +17,8 @@ use render::fill_parts;
 use serde::de::DeserializeOwned;
 use tracing::{debug, trace};
 
-use crate::{
-    hypermedia::{Affordance, Operation},
-    parser::VarMod,
-};
+use crate::parser::VarMod;
+use mattak_hypermedia::{Affordance, Operation};
 
 use self::{
     parser::{Parsed, Part},
@@ -66,12 +64,15 @@ pub enum Error {
     UnexpectedVariables(Vec<String>),
     #[error("capture deserialization: {0:?}")]
     Deserialization(#[from] de::UriDeserializationError),
+    #[error("hypermedia error: {0:?}")]
+    Hypermedia(#[from] mattak_hypermedia::Error),
 }
 
 impl IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
         use http::status::StatusCode;
         match self {
+            Error::Hypermedia(e) => e.into_response(),
             Error::UnexpectedVariables(_)
             | Error::Deserialization(_)
             | Error::MismatchedValues(_, _, _) => {

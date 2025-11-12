@@ -9,10 +9,9 @@ use axum::{
 use hyper::Uri;
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{
-    hypermedia::{Affordance, Operation, ResourceFields},
-    Error, {route_config, Entry, Route, RouteTemplate as _},
-};
+use mattak_hypermedia::{Affordance, Operation, ResourceFields};
+
+use crate::{route_config, Entry, Error, FillPolicy, Route, RouteTemplate as _};
 
 pub trait ExtractedRoute {
     type Nick: Route + Clone;
@@ -27,7 +26,10 @@ pub trait ExtractedRoute {
     where
         <Self as ExtractedRoute>::Nick: Serialize,
     {
-        ResourceFields::new(&self.entry(), self.nick(), api_name, operation)
+        let entry = self.entry();
+        let id = entry.serialize(FillPolicy::Strict, self.nick())?;
+        let template = entry.template()?;
+        ResourceFields::new(id, template, self.nick(), api_name, operation).map_err(Error::from)
     }
 
     fn affordance(&self, name: impl ToString, ops: Vec<Operation>) -> Affordance {

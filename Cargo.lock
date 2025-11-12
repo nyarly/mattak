@@ -1538,12 +1538,14 @@ dependencies = [
  "axum",
  "hyper",
  "iri-string",
+ "mattak_hypermedia",
  "nom",
  "percent-encoding",
  "regex",
  "serde",
  "thiserror 1.0.69",
  "tracing",
+ "tracing-test",
  "typemap-ors",
 ]
 
