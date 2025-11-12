@@ -1535,6 +1535,12 @@ dependencies = [
 [[package]]
 name = "mattak_querymapping"
 version = "0.3.0"
+dependencies = [
+ "axum",
+ "serde",
+ "sqlx",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "mattak_ratelimiting"

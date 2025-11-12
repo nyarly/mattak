@@ -37,5 +37,6 @@ serde = { version = "1.0.204", features = ["derive"] }
 serde_json = "1.0.120"
 hyper = { version = "1.4", features = ["client", "http1"] }
 tower = "0.4.13"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono"] }
 futures = "0.3.30"
 futures-util = "0.3.30"
