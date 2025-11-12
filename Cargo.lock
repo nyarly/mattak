@@ -1528,6 +1528,18 @@ version = "0.3.0"
 [[package]]
 name = "mattak_routing"
 version = "0.3.0"
+dependencies = [
+ "axum",
+ "hyper",
+ "iri-string",
+ "nom",
+ "percent-encoding",
+ "regex",
+ "serde",
+ "thiserror 1.0.69",
+ "tracing",
+ "typemap-ors",
+]
 
 [[package]]
 name = "md-5"

@@ -1,7 +1,10 @@
 use hyper::Uri;
 use regex::Regex;
 use serde::{
-    de::{self, DeserializeSeed, EnumAccess, Error, MapAccess, SeqAccess, VariantAccess, Visitor},
+    de::{
+        self, DeserializeSeed, EnumAccess, Error as SerdeError, MapAccess, SeqAccess,
+        VariantAccess, Visitor,
+    },
     forward_to_deserialize_any, Deserializer,
 };
 use std::{
@@ -13,10 +16,7 @@ use std::{
 };
 use tracing::trace;
 
-use crate::{
-    error,
-    routing::{render::var_re_name, Parsed, Part, VarMod},
-};
+use crate::{render::var_re_name, Error, Parsed, Part, VarMod};
 
 // *** Time being, this is cribbed wholesale from Axum
 
@@ -62,7 +62,7 @@ impl UriDeserializationError {
     }
 }
 
-impl Error for UriDeserializationError {
+impl SerdeError for UriDeserializationError {
     #[inline]
     fn custom<T>(msg: T) -> Self
     where
@@ -617,7 +617,7 @@ impl UriDeserializer {
         uri: &Uri,
         parsed: &Parsed,
         regex: &Regex,
-    ) -> Result<UriDeserializer, error::Error> {
+    ) -> Result<UriDeserializer, Error> {
         trace!("Setting up to deserialize {uri:?} via {parsed:?}");
         // Scalar values, regardless of source
         let mut scalars: HashMap<Rc<str>, Rc<str>> = HashMap::new();
@@ -640,12 +640,12 @@ impl UriDeserializer {
         // Local lambda to capture scalars
         // Key concern is that prefixed values have to match up properly
         // i/o/w /{foo:3}/{foo} -> /exa/example, not /zzz/yyyyyyy
-        let mut new_scalar = |var_name: Rc<str>, m: Rc<str>| -> Result<(), error::Error> {
+        let mut new_scalar = |var_name: Rc<str>, m: Rc<str>| -> Result<(), Error> {
             if let Some(new_val) = percent_decode(m) {
                 if let Some(val) = scalars.get(&var_name) {
                     if val.len() > new_val.len() {
                         if !val.starts_with(&*new_val) {
-                            return Err(error::Error::MismatchedValues(
+                            return Err(Error::MismatchedValues(
                                 var_name.to_string(),
                                 val.to_string(),
                                 new_val.to_string(),
@@ -654,7 +654,7 @@ impl UriDeserializer {
                     } else if new_val.starts_with(val.as_ref()) {
                         scalars.insert(var_name, new_val);
                     } else {
-                        return Err(error::Error::MismatchedValues(
+                        return Err(Error::MismatchedValues(
                             var_name.to_string(),
                             val.to_string(),
                             new_val.to_string(),
@@ -670,7 +670,7 @@ impl UriDeserializer {
         // definitely considering a secondary Nom parser instead of RE here.
         let caps = regex
             .captures(url)
-            .ok_or_else(|| error::Error::NoMatch(url.to_string()))?;
+            .ok_or_else(|| Error::NoMatch(url.to_string()))?;
 
         // Extract values from the URI query
         let query_parse = match (parsed.query.is_some(), uri.query()) {
@@ -712,7 +712,7 @@ impl UriDeserializer {
         if let Some(name) = parsed.query_assoc_name() {
             assocs.insert(name, query_assocs.clone());
         } else if (&query_assocs).len() > 0 {
-            return Err(error::Error::UnexpectedVariables(
+            return Err(Error::UnexpectedVariables(
                 query_assocs.iter().map(|(k, _)| k.to_string()).collect(),
             ));
         }
@@ -746,7 +746,7 @@ impl UriDeserializer {
         if let Some(name) = parsed.path_assoc_name() {
             assocs.insert(name, path_assocs.clone());
         } else if (&path_assocs).len() > 0 {
-            return Err(error::Error::UnexpectedVariables(
+            return Err(Error::UnexpectedVariables(
                 path_assocs.iter().map(|(k, _)| k.to_string()).collect(),
             ));
         }
@@ -786,14 +786,14 @@ impl UriDeserializer {
                                     VarBinding::PathExplode(sep.clone(), string.clone()),
                                 ))
                             } else {
-                                Err(error::Error::MismatchedValues(
+                                Err(Error::MismatchedValues(
                                     vname.to_string(),
                                     string.to_string(),
                                     query.join(sep),
                                 ))
                             }
                         } else {
-                            Err(error::Error::MismatchedValues(
+                            Err(Error::MismatchedValues(
                                 vname.to_string(),
                                 string.to_string(),
                                 "".to_string(),
@@ -806,7 +806,7 @@ impl UriDeserializer {
                     (None, None, None, None) => Ok((vname.clone(), VarBinding::Empty)),
                     (None, None, Some(q), Some(assoc)) => {
                         if q.len() > 0 {
-                            Err(error::Error::UnexpectedVariables(vec![vname.to_string()]))
+                            Err(Error::UnexpectedVariables(vec![vname.to_string()]))
                         } else {
                             Ok((vname.clone(), VarBinding::Assoc("?".into(), assoc.clone())))
                         }

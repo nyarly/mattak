@@ -26,14 +26,15 @@ repository = "https://github.com/nyarly/mattak"
 
 [workspace.dependencies]
 tracing = "0.1"
+thiserror = "1.0.63"
 axum = { version = "0.7", features = ["macros", "json"]}
 axum-extra = { version = "0.9.3", features = ["query", "typed-header"] }
 base64ct = { version = "1.6.0", features = ["alloc"] }
 chrono = { version = "0.4.38" }
+iri-string = { version = "0.7.4", features = ["serde"] }
+percent-encoding = "2.3.1"
 serde = { version = "1.0.204", features = ["derive"] }
 serde_json = "1.0.120"
-percent-encoding = "2.3.1"
-thiserror = "1.0.63"
 hyper = { version = "1.4", features = ["client", "http1"] }
 tower = "0.4.13"
 futures = "0.3.30"

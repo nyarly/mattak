@@ -1,8 +1,8 @@
 use std::{
-    str,
     collections::{hash_map, HashMap},
     fmt::Display,
     rc::Rc,
+    str,
     sync::LazyLock,
 };
 
@@ -14,7 +14,7 @@ use serde::{
     Serialize,
 };
 
-use crate::routing::{parser::VarSpec, FillPolicy, Parsed, VarMod};
+use crate::{parser::VarSpec, FillPolicy, Parsed, VarMod};
 
 use super::parser;
 
@@ -100,7 +100,7 @@ fn mapexprs(
     template
         .parts_iter()
         .map(|part| {
-            use crate::routing::Part::*;
+            use crate::Part::*;
             match part {
                 Lit(s) => Ok(vec![Rc::<str>::from(s.clone())]),
                 SegPathVar(expression) | SegPathRest(expression) | Expression(expression) => {

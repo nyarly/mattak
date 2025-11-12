@@ -10,9 +10,8 @@ use hyper::Uri;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
-    error,
     hypermedia::{Affordance, Operation, ResourceFields},
-    routing::{route_config, Entry, Route, RouteTemplate as _},
+    Error, {route_config, Entry, Route, RouteTemplate as _},
 };
 
 pub trait ExtractedRoute {
@@ -24,7 +23,7 @@ pub trait ExtractedRoute {
         &self,
         api_name: &str,
         operation: Vec<Operation>,
-    ) -> Result<ResourceFields<Self::Nick>, error::Error>
+    ) -> Result<ResourceFields<Self::Nick>, Error>
     where
         <Self as ExtractedRoute>::Nick: Serialize,
     {
@@ -220,7 +219,7 @@ pub enum Rejection {
     #[error("couldn't get nested path {0:?}")]
     NestedPath(#[from] NestedPathRejection),
     #[error("top-level error {0:?}")]
-    TopLevel(#[from] error::Error), // XXX barf
+    TopLevel(#[from] Error), // XXX barf
 }
 
 impl IntoResponse for Rejection {
