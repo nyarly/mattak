@@ -1486,6 +1486,13 @@ dependencies = [
 [[package]]
 name = "mattak_cachecontrol"
 version = "0.3.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "futures-util",
+ "hyper",
+ "tower 0.4.13",
+]
 
 [[package]]
 name = "mattak_condreq"

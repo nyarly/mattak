@@ -10,3 +10,8 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+axum.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+hyper.workspace = true
+tower.workspace = true
