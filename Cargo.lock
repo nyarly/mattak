@@ -1516,6 +1516,12 @@ dependencies = [
 [[package]]
 name = "mattak_hypermedia"
 version = "0.3.0"
+dependencies = [
+ "axum",
+ "iri-string",
+ "serde",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "mattak_querymapping"

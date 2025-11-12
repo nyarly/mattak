@@ -10,3 +10,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+axum.workspace = true
+iri-string.workspace = true
+serde.workspace = true
+thiserror.workspace = true
