@@ -1545,6 +1545,12 @@ dependencies = [
 [[package]]
 name = "mattak_ratelimiting"
 version = "0.3.0"
+dependencies = [
+ "axum",
+ "governor",
+ "tower_governor",
+ "tracing",
+]
 
 [[package]]
 name = "mattak_routing"
