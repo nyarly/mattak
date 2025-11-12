@@ -56,11 +56,14 @@ pub enum Error {
     URIAuthorityMissing,
     #[error("URI authority ({0}) not configured with an upstream authentication authority")]
     NoKeysetForAuthority(String),
+    #[error("conditional request error: {0:?}")]
+    CondReq(#[from] mattak_condreq::Error),
 }
 
 impl IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
         match self {
+            Error::CondReq(e) => e.into_response(),
             Error::MatchedPath(e) => e.into_response(),
             Error::NestedPath(e) => e.into_response(),
             Error::Extension(e) => e.into_response(),

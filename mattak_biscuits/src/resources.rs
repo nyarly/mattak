@@ -3,11 +3,10 @@ use biscuit_auth::BiscuitWebKey;
 use chrono::{TimeDelta, Utc};
 use serde::Serialize;
 
-use crate::{
-    condreq,
-    routing::{Route, RouteTemplateString},
-    Authentication, Error,
-};
+use mattak_condreq::CondRetreiveHeader;
+use mattak_routing::{Route, RouteTemplateString};
+
+use crate::{Authentication, Error};
 
 pub struct WellKnownKeySet();
 
@@ -34,7 +33,7 @@ impl From<Authentication> for KeySetResponse {
 }
 
 pub async fn get_well_known_key_set<KS: Into<KeySetResponse>>(
-    if_none_match: condreq::CondRetreiveHeader,
+    if_none_match: CondRetreiveHeader,
     State(keys): State<KS>,
 ) -> Result<impl IntoResponse, Error> {
     Ok(if_none_match.respond(keys.into())?)

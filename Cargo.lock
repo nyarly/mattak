@@ -1472,6 +1472,8 @@ dependencies = [
  "futures",
  "futures-util",
  "hyper",
+ "mattak_condreq",
+ "mattak_routing",
  "pin-project-lite",
  "reqwest",
  "serde",

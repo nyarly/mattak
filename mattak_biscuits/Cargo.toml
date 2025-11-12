@@ -27,3 +27,5 @@ futures.workspace = true
 futures-util.workspace = true
 tower.workspace = true
 base64ct.workspace = true
+mattak_condreq = { version = "0.3.0", path = "../mattak_condreq" }
+mattak_routing = { version = "0.3.0", path = "../mattak_routing" }
